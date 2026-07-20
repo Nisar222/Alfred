@@ -12,6 +12,7 @@ from .database import Base, engine, get_db
 from .models import Call, CallStatus, Campaign, CampaignStatus
 from .schemas import CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult, OutcomeUpdate
 from .services import daily_metrics, score_call, simulate_call
+from .threecx import ThreeCXClient, ThreeCXError
 
 
 @asynccontextmanager
@@ -28,6 +29,28 @@ app.add_middleware(CORSMiddleware, allow_origins=get_settings().cors_origins.spl
 def health():
     settings = get_settings()
     return {"status": "ok", "call_provider": settings.call_provider, "max_concurrent_calls": settings.max_concurrent_calls}
+
+
+@app.post("/integrations/3cx/verify")
+def verify_threecx():
+    """Verify credentials and extension visibility. This endpoint never places a call."""
+    settings = get_settings()
+    if settings.call_provider != "threecx":
+        raise HTTPException(409, "3CX is disabled. Set CALL_PROVIDER=threecx only for the controlled test.")
+    client = None
+    try:
+        client = ThreeCXClient(settings)
+        devices = client.list_devices()
+    except ThreeCXError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    finally:
+        if client:
+            client.close()
+    return {
+        "status": "connected",
+        "extension": settings.threecx_control_extension,
+        "devices": [{"id": device.device_id, "user_agent": device.user_agent} for device in devices],
+    }
 
 
 @app.post("/campaigns", response_model=CampaignOut, status_code=status.HTTP_201_CREATED)
