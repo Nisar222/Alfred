@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Jamal Dialler</title><link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#today" aria-label="Jamal Dialler home"><span class="brand-mark">J</span><span>Jamal <b>Dialler</b></span></a>
+    <div class="topbar-actions"><span id="health" class="connection"><i></i> Checking connection</span><button class="quiet-button" id="new-campaign">New campaign</button></div>
+  </header>
+  <main id="today">
+    <section class="welcome">
+      <div><p class="date-label" id="today-date">TODAY</p><h1>Good morning, Jamal.</h1><p class="subhead" id="campaign-summary">Your calling day is ready when you are.</p></div>
+      <div class="secure-note"><span>⌁</span> Your customer data stays private</div>
+    </section>
+
+    <section class="hero-card" aria-labelledby="next-step-title">
+      <div class="hero-copy"><p class="eyebrow">YOUR NEXT STEP</p><h2 id="next-step-title">Set up your first calling day</h2><p id="next-step-detail">Create a campaign, add your prospect list, then let the system handle the calls.</p><div class="hero-actions"><button id="primary-action" class="primary-button">Create a campaign <span>→</span></button><button id="secondary-action" class="text-button" hidden></button></div></div>
+      <div class="day-progress"><div class="progress-ring" id="progress-ring"><div><strong id="progress-number">0</strong><small>of <span id="progress-total">0</span> calls</small></div></div><p id="progress-label">Nothing scheduled yet</p></div>
+    </section>
+
+    <section class="overview" aria-label="Today at a glance">
+      <article class="stat-card"><span class="stat-icon mint">☎</span><div><p>Completed</p><strong id="calls">0</strong><small>calls today</small></div></article>
+      <article class="stat-card"><span class="stat-icon blue">✓</span><div><p>Sales &amp; leads</p><strong id="positive-outcomes">0</strong><small id="positive-detail">waiting for outcomes</small></div></article>
+      <article class="stat-card"><span class="stat-icon amber">↗</span><div><p>Close rate</p><strong id="rate">0%</strong><small id="rate-detail">from labelled calls</small></div></article>
+    </section>
+
+    <section class="workspace">
+      <article class="review-card panel" aria-labelledby="review-title">
+        <div class="panel-heading"><div><p class="eyebrow">KEEP THE SYSTEM LEARNING</p><h2 id="review-title">Calls to review</h2></div><span class="count-badge" id="review-count">0</span></div>
+        <p class="panel-intro" id="review-intro">When calls are finished, their outcomes will appear here for a quick review.</p>
+        <div class="review-list" id="review-list"></div>
+        <button id="review-now" class="secondary-button" hidden>Review calls <span>→</span></button>
+      </article>
+      <article class="learning-card panel" aria-labelledby="learning-title">
+        <div class="learning-orbit">✦</div><p class="eyebrow">WHAT THE SYSTEM IS LEARNING</p><h2 id="learning-title">Your first insight will appear here</h2>
+        <p id="learning-copy">After you label a few calls, Jamal Dialler will explain in plain language what is working and what to try next.</p>
+        <div class="learning-footer"><span id="learning-status">Needs labelled calls</span><button id="view-learning" class="link-button" disabled>View details →</button></div>
+      </article>
+    </section>
+
+    <section class="campaign-section" aria-labelledby="campaigns-title"><div class="section-heading"><div><h2 id="campaigns-title">Your campaigns</h2><p>Start, pause, or continue a calling day.</p></div><button id="campaign-add" class="secondary-button small">+ New campaign</button></div><div id="campaigns" class="campaign-list"></div></section>
+  </main>
+
+  <dialog id="campaign-dialog"><form id="campaign-form" method="dialog"><button class="close" value="cancel" aria-label="Close">×</button><p class="eyebrow">START A CALLING DAY</p><h2>Create your campaign</h2><p class="dialog-intro">Keep this simple. You can refine the script as you learn.</p><label>Campaign name<input name="name" required minlength="2" placeholder="e.g. August business outreach"></label><label>Your opening script<textarea name="script" required minlength="10" placeholder="Write the greeting, a few discovery questions, and your offer."></textarea></label><div class="dialog-actions"><button type="button" class="text-button cancel">Not now</button><button class="primary-button" value="default">Create campaign <span>→</span></button></div></form></dialog>
+  <script src="/app.js"></script>
+</body></html>
