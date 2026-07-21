@@ -148,13 +148,23 @@ class ThreeCXClient:
         while time.monotonic() < deadline:
             try:
                 response = self.client.get(
-                    f"/callcontrol/{self.source_dn}/participants/{call.participant_id}",
+                    f"/callcontrol/{self.source_dn}",
                     headers=self._authorized_headers(),
                 )
                 response.raise_for_status()
             except httpx.HTTPError as exc:
-                raise self._failure("3CX could not read the test-call status.", exc) from exc
-            participant = response.json()
+                raise self._failure("3CX could not read the Route Point call state.", exc) from exc
+            participant = next(
+                (
+                    item
+                    for item in (response.json().get("participants") or [])
+                    if item.get("id") == call.participant_id
+                ),
+                None,
+            )
+            if participant is None:
+                time.sleep(1)
+                continue
             last_status = str(participant.get("status", "unknown"))
             if last_status.lower() == "connected":
                 return
