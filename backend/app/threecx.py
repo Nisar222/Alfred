@@ -42,6 +42,15 @@ class ThreeCXClient:
     def close(self) -> None:
         self.client.close()
 
+    @staticmethod
+    def _failure(message: str, exc: httpx.HTTPError) -> ThreeCXError:
+        """Expose only the upstream HTTP diagnostic; never credentials or tokens."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            body = exc.response.text.replace("\n", " ").strip()[:300]
+            suffix = f" (3CX HTTP {exc.response.status_code}" + (f": {body}" if body else "") + ")"
+            return ThreeCXError(message + suffix)
+        return ThreeCXError(message)
+
     def _access_token(self) -> str:
         try:
             response = self.client.post(
@@ -99,7 +108,7 @@ class ThreeCXClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise ThreeCXError("3CX could not start the test call. Check the route point and outbound route.") from exc
+            raise self._failure("3CX could not start the test call. Check the route point and outbound route.", exc) from exc
         result = response.json().get("result") or {}
         participant_id = result.get("id")
         if participant_id is None:
@@ -117,7 +126,7 @@ class ThreeCXClient:
                 )
                 response.raise_for_status()
             except httpx.HTTPError as exc:
-                raise ThreeCXError("3CX could not read the test-call status.") from exc
+                raise self._failure("3CX could not read the test-call status.", exc) from exc
             participant = response.json()
             last_status = str(participant.get("status", "unknown"))
             if last_status.lower() == "connected":
@@ -160,7 +169,7 @@ class ThreeCXClient:
             ) as response:
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise ThreeCXError("3CX could not play the prerecorded message.") from exc
+            raise self._failure("3CX could not play the prerecorded message.", exc) from exc
 
     def drop_call(self, call: ThreeCXTestCall) -> None:
         try:
@@ -171,4 +180,4 @@ class ThreeCXClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise ThreeCXError("The message finished, but 3CX could not end the test call.") from exc
+            raise self._failure("The message finished, but 3CX could not end the test call.", exc) from exc
