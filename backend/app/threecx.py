@@ -24,6 +24,8 @@ class ThreeCXDevice:
 class ThreeCXTestCall:
     participant_id: int
     destination: str
+    initial_status: str
+    initial_reason: str
 
 
 class ThreeCXClient:
@@ -136,11 +138,17 @@ class ThreeCXClient:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise self._failure("3CX could not start the test call. Check the route point and outbound route.", exc) from exc
-        result = response.json().get("result") or {}
+        payload = response.json()
+        result = payload.get("result") or {}
         participant_id = result.get("id")
         if participant_id is None:
             raise ThreeCXError("3CX accepted the test call but did not return its call participant.")
-        return ThreeCXTestCall(participant_id=int(participant_id), destination=destination)
+        return ThreeCXTestCall(
+            participant_id=int(participant_id),
+            destination=destination,
+            initial_status=str(payload.get("finalstatus", "not provided")),
+            initial_reason=str(payload.get("reasontext") or payload.get("reason") or "not provided"),
+        )
 
     def wait_until_connected(self, call: ThreeCXTestCall) -> None:
         deadline = time.monotonic() + self.settings.threecx_test_call_timeout_seconds
@@ -171,7 +179,10 @@ class ThreeCXClient:
             if last_status.lower() in {"dropped", "failed", "disconnected"}:
                 raise ThreeCXError(f"The test call ended before it was answered ({last_status}).")
             time.sleep(1)
-        raise ThreeCXError(f"The test call was not answered within the timeout ({last_status}).")
+        raise ThreeCXError(
+            "The test call was not answered within the timeout "
+            f"({last_status}; initial 3CX result: {call.initial_status} — {call.initial_reason})."
+        )
 
     @staticmethod
     def _pcm_chunks(audio_path: Path) -> Iterator[bytes]:

@@ -47,3 +47,4 @@ class ThreeCXClientTests(unittest.TestCase):
         finally:
             client.close()
         self.assertEqual(call.participant_id, 72)
+        self.assertEqual(call.initial_status, "not provided")
