@@ -89,6 +89,33 @@ class ThreeCXClient:
             if device.get("device_id")
         ]
 
+    def inspect_accessible_dns(self) -> list[dict[str, object]]:
+        """Return a privacy-safe view of call-control DNs available to the app."""
+        try:
+            response = self.client.get("/callcontrol", headers=self._authorized_headers())
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise self._failure("3CX could not list call-control entities.", exc) from exc
+        entities: list[dict[str, object]] = []
+        for entity in response.json():
+            participants = entity.get("participants") or []
+            entities.append(
+                {
+                    "dn": entity.get("dn"),
+                    "type": entity.get("type"),
+                    "participants": [
+                        {
+                            "id": participant.get("id"),
+                            "status": participant.get("status"),
+                            "dn": participant.get("dn"),
+                            "direct_control": participant.get("direct_control"),
+                        }
+                        for participant in participants
+                    ],
+                }
+            )
+        return entities
+
     def _authorized_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._access_token()}"}
 

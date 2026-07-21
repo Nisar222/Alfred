@@ -53,6 +53,24 @@ def verify_threecx():
     }
 
 
+@app.post("/integrations/3cx/inspect")
+def inspect_threecx():
+    """Read-only Route Point inspection for 3CX integration troubleshooting."""
+    settings = get_settings()
+    if settings.call_provider != "threecx":
+        raise HTTPException(409, "3CX is disabled. Set CALL_PROVIDER=threecx for the controlled test.")
+    client = None
+    try:
+        client = ThreeCXClient(settings)
+        entities = client.inspect_accessible_dns()
+    except ThreeCXError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    finally:
+        if client:
+            client.close()
+    return {"configured_source_dn": settings.threecx_app_id, "entities": entities}
+
+
 @app.post("/integrations/3cx/test-prerecorded-message")
 def test_prerecorded_message():
     """Place one explicitly enabled test call; recipient is never client supplied."""
