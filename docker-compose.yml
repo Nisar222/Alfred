@@ -45,6 +45,12 @@ services:
       THREECX_APP_ID: ${THREECX_APP_ID:-}
       THREECX_API_KEY: ${THREECX_API_KEY:-}
       THREECX_CONTROL_EXTENSION: ${THREECX_CONTROL_EXTENSION:-}
+      THREECX_TEST_DESTINATION: ${THREECX_TEST_DESTINATION:-}
+      THREECX_TEST_CALL_ENABLED: ${THREECX_TEST_CALL_ENABLED:-false}
+      THREECX_TEST_CALL_TIMEOUT_SECONDS: ${THREECX_TEST_CALL_TIMEOUT_SECONDS:-45}
+      PRERECORDED_MESSAGE_PATH: ${PRERECORDED_MESSAGE_PATH:-/app/media/test-message.mp3}
+    volumes:
+      - ./media:/app/media:ro
     ports:
       # Bind only to loopback; put a TLS reverse proxy in front of this service.
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"

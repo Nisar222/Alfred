@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     threecx_api_key: str = ""
     threecx_control_extension: str = ""
     threecx_timeout_seconds: float = 15.0
+    threecx_test_destination: str = ""
+    prerecorded_message_path: str = "/app/media/test-message.mp3"
+    threecx_test_call_enabled: bool = False
+    threecx_test_call_timeout_seconds: int = 45
 
 
 @lru_cache

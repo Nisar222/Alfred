@@ -1,4 +1,5 @@
 import unittest
+import json
 
 import httpx
 
@@ -31,3 +32,18 @@ class ThreeCXClientTests(unittest.TestCase):
             client.close()
         self.assertEqual(devices[0].device_id, "device-1")
 
+    def test_starts_call_from_application_route_point(self):
+        def handler(request):
+            if request.url.path == "/connect/token":
+                return httpx.Response(200, json={"access_token": "temporary-token"})
+            self.assertEqual(request.headers["Authorization"], "Bearer temporary-token")
+            self.assertEqual(request.url.path, "/callcontrol/3cxapi/makecall")
+            self.assertEqual(json.loads(request.content), {"destination": "+15551234567", "timeout": 45})
+            return httpx.Response(202, json={"result": {"id": 72}})
+
+        client = ThreeCXClient(self.settings(), transport=httpx.MockTransport(handler))
+        try:
+            call = client.start_test_call("+15551234567")
+        finally:
+            client.close()
+        self.assertEqual(call.participant_id, 72)

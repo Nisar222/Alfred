@@ -1,4 +1,7 @@
 .env
+media/*.mp3
+media/*.wav
+!media/.gitkeep
 .venv/
 __pycache__/
 *.py[cod]
@@ -7,4 +10,3 @@ node_modules/
 dist/
 data/
 .DS_Store
-

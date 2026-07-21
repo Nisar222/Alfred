@@ -53,6 +53,32 @@ def verify_threecx():
     }
 
 
+@app.post("/integrations/3cx/test-prerecorded-message")
+def test_prerecorded_message():
+    """Place one explicitly enabled test call; recipient is never client supplied."""
+    settings = get_settings()
+    if settings.call_provider != "threecx":
+        raise HTTPException(409, "3CX is disabled. Set CALL_PROVIDER=threecx for the controlled test.")
+    if not settings.threecx_test_call_enabled:
+        raise HTTPException(409, "Test calling is locked. Set THREECX_TEST_CALL_ENABLED=true on the VPS when ready.")
+    if not settings.threecx_test_destination:
+        raise HTTPException(409, "Set the single approved test destination on the VPS before calling.")
+    client = None
+    call = None
+    try:
+        client = ThreeCXClient(settings)
+        call = client.start_test_call(settings.threecx_test_destination)
+        client.wait_until_connected(call)
+        client.play_prerecorded_message(call, Path(settings.prerecorded_message_path))
+        client.drop_call(call)
+    except ThreeCXError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    finally:
+        if client:
+            client.close()
+    return {"status": "completed", "destination": settings.threecx_test_destination, "message": "prerecorded message played"}
+
+
 @app.post("/campaigns", response_model=CampaignOut, status_code=status.HTTP_201_CREATED)
 def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
     if db.scalar(select(Campaign).where(Campaign.name == payload.name)):

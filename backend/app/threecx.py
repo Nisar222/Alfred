@@ -1,10 +1,10 @@
-"""Minimal, test-first client for the 3CX V20 Call Control API.
-
-This module deliberately supports discovery only.  It proves that the VPS can
-authenticate and see the approved extension before any outbound call or audio
-stream is enabled.
-"""
+"""Small, deliberately constrained 3CX V20 Call Control client."""
 from dataclasses import dataclass
+from pathlib import Path
+import subprocess
+import time
+from typing import Iterator
+
 import httpx
 
 from .config import Settings
@@ -18,6 +18,12 @@ class ThreeCXError(RuntimeError):
 class ThreeCXDevice:
     device_id: str
     user_agent: str | None = None
+
+
+@dataclass(frozen=True)
+class ThreeCXTestCall:
+    participant_id: int
+    destination: str
 
 
 class ThreeCXClient:
@@ -73,3 +79,96 @@ class ThreeCXClient:
             for device in response.json()
             if device.get("device_id")
         ]
+
+    def _authorized_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._access_token()}"}
+
+    @property
+    def source_dn(self) -> str:
+        # A 3CX Service Principal Client ID is also the Route Point DN. Media
+        # control is intentionally performed only on this application-owned DN,
+        # never on a user's extension.
+        return self.settings.threecx_app_id
+
+    def start_test_call(self, destination: str) -> ThreeCXTestCall:
+        try:
+            response = self.client.post(
+                f"/callcontrol/{self.source_dn}/makecall",
+                headers=self._authorized_headers(),
+                json={"destination": destination, "timeout": self.settings.threecx_test_call_timeout_seconds},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ThreeCXError("3CX could not start the test call. Check the route point and outbound route.") from exc
+        result = response.json().get("result") or {}
+        participant_id = result.get("id")
+        if participant_id is None:
+            raise ThreeCXError("3CX accepted the test call but did not return its call participant.")
+        return ThreeCXTestCall(participant_id=int(participant_id), destination=destination)
+
+    def wait_until_connected(self, call: ThreeCXTestCall) -> None:
+        deadline = time.monotonic() + self.settings.threecx_test_call_timeout_seconds
+        last_status = "unknown"
+        while time.monotonic() < deadline:
+            try:
+                response = self.client.get(
+                    f"/callcontrol/{self.source_dn}/participants/{call.participant_id}",
+                    headers=self._authorized_headers(),
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise ThreeCXError("3CX could not read the test-call status.") from exc
+            participant = response.json()
+            last_status = str(participant.get("status", "unknown"))
+            if last_status.lower() == "connected":
+                return
+            if last_status.lower() in {"dropped", "failed", "disconnected"}:
+                raise ThreeCXError(f"The test call ended before it was answered ({last_status}).")
+            time.sleep(1)
+        raise ThreeCXError(f"The test call was not answered within the timeout ({last_status}).")
+
+    @staticmethod
+    def _pcm_chunks(audio_path: Path) -> Iterator[bytes]:
+        """Convert a source MP3/WAV to the exact real-time audio 3CX expects."""
+        command = [
+            "ffmpeg", "-nostdin", "-v", "error", "-re", "-i", str(audio_path),
+            "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1",
+        ]
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as exc:
+            raise ThreeCXError("Audio converter is unavailable in the API container.") from exc
+        assert process.stdout is not None
+        try:
+            while chunk := process.stdout.read(320):  # 20 ms of 8 kHz, 16-bit mono PCM
+                yield chunk
+        finally:
+            process.stdout.close()
+            process.wait(timeout=10)
+            if process.returncode not in (0, None):
+                raise ThreeCXError("3CX could not convert the prerecorded message to call audio.")
+
+    def play_prerecorded_message(self, call: ThreeCXTestCall, audio_path: Path) -> None:
+        if not audio_path.is_file():
+            raise ThreeCXError("The prerecorded message is missing from the VPS media folder.")
+        try:
+            with self.client.stream(
+                "POST",
+                f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/stream",
+                headers={**self._authorized_headers(), "Content-Type": "application/octet-stream"},
+                content=self._pcm_chunks(audio_path),
+            ) as response:
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ThreeCXError("3CX could not play the prerecorded message.") from exc
+
+    def drop_call(self, call: ThreeCXTestCall) -> None:
+        try:
+            response = self.client.post(
+                f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/drop",
+                headers=self._authorized_headers(),
+                json={},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ThreeCXError("The message finished, but 3CX could not end the test call.") from exc
