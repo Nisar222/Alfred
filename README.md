@@ -63,3 +63,11 @@ restart the API, and explicitly invoke:
 ```bash
 curl -X POST http://127.0.0.1:8000/integrations/3cx/test-prerecorded-message
 ```
+
+## Local audio and call playbooks
+
+Jamal uploads MP3 or WAV opening messages from Alfred's **Settings** screen.
+Uploads are stored in the VPS-local Docker volume `audio_uploads`; PostgreSQL
+stores only their metadata. The original `media/` directory remains read-only
+for the controlled test file. Back up the Docker volume with the rest of the
+VPS data.

@@ -52,6 +52,17 @@ class PromptStatus(str, enum.Enum):
     retired = "retired"
 
 
+class AudioAssetStatus(str, enum.Enum):
+    ready = "ready"
+    deleted = "deleted"
+
+
+class PlaybookStatus(str, enum.Enum):
+    draft = "draft"
+    approved = "approved"
+    retired = "retired"
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -92,9 +103,13 @@ class Campaign(TimestampMixin, Base):
     prompt_id: Mapped[int | None] = mapped_column(ForeignKey("prompts.id", ondelete="SET NULL"), index=True)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Dubai", nullable=False)
     calling_window_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    playbook_version_id: Mapped[int | None] = mapped_column(ForeignKey("playbook_versions.id", ondelete="RESTRICT"), index=True)
+    caller_id_override: Mapped[str | None] = mapped_column(String(80))
+    max_concurrent_calls_override: Mapped[int | None] = mapped_column(Integer)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     calls: Mapped[list["Call"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
     prompt: Mapped["Prompt | None"] = relationship()
+    playbook_version: Mapped["PlaybookVersion | None"] = relationship(back_populates="campaigns")
 
 
 class Prospect(TimestampMixin, Base):
@@ -134,6 +149,7 @@ class Call(TimestampMixin, Base):
     failure_reason: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    configuration_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     campaign: Mapped["Campaign"] = relationship(back_populates="calls")
     prospect: Mapped["Prospect | None"] = relationship(back_populates="calls")
     metric: Mapped["CallMetric | None"] = relationship(back_populates="call", cascade="all, delete-orphan", uselist=False)
@@ -149,6 +165,58 @@ class Call(TimestampMixin, Base):
     @transcript.setter
     def transcript(self, content: str | None) -> None:
         self._transcript = Transcript(content=content) if content is not None else None
+
+    @property
+    def recording_available(self) -> bool:
+        return bool(self.recording and self.recording.deleted_at is None)
+
+
+class GlobalSettings(TimestampMixin, Base):
+    """Single tenant settings. Row id=1 is deliberately the only permitted row."""
+    __tablename__ = "global_settings"
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    default_timezone: Mapped[str] = mapped_column(String(64), default="Asia/Dubai", nullable=False)
+    default_calling_window_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    max_concurrent_calls: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    recording_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    test_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class AudioAsset(TimestampMixin, Base):
+    __tablename__ = "audio_assets"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    status: Mapped[AudioAssetStatus] = mapped_column(Enum(AudioAssetStatus, name="audio_asset_status"), default=AudioAssetStatus.ready, nullable=False)
+    playbook_versions: Mapped[list["PlaybookVersion"]] = relationship(back_populates="opening_audio")
+
+
+class Playbook(TimestampMixin, Base):
+    __tablename__ = "playbooks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(150), unique=True, nullable=False)
+    status: Mapped[PlaybookStatus] = mapped_column(Enum(PlaybookStatus, name="playbook_status"), default=PlaybookStatus.draft, nullable=False)
+    current_version_id: Mapped[int | None] = mapped_column(ForeignKey("playbook_versions.id", use_alter=True, name="fk_playbooks_current_version"))
+    versions: Mapped[list["PlaybookVersion"]] = relationship(back_populates="playbook", foreign_keys="PlaybookVersion.playbook_id", cascade="all, delete-orphan")
+    current_version: Mapped["PlaybookVersion | None"] = relationship(foreign_keys=[current_version_id], post_update=True)
+
+
+class PlaybookVersion(TimestampMixin, Base):
+    __tablename__ = "playbook_versions"
+    __table_args__ = (UniqueConstraint("playbook_id", "version", name="uq_playbook_version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    playbook_id: Mapped[int] = mapped_column(ForeignKey("playbooks.id", ondelete="CASCADE"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    script: Mapped[str] = mapped_column(Text, nullable=False)
+    opening_audio_id: Mapped[int | None] = mapped_column(ForeignKey("audio_assets.id", ondelete="RESTRICT"), index=True)
+    recording_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[PlaybookStatus] = mapped_column(Enum(PlaybookStatus, name="playbook_version_status"), default=PlaybookStatus.draft, nullable=False)
+    playbook: Mapped["Playbook"] = relationship(back_populates="versions", foreign_keys=[playbook_id])
+    opening_audio: Mapped["AudioAsset | None"] = relationship(back_populates="playbook_versions")
+    campaigns: Mapped[list["Campaign"]] = relationship(back_populates="playbook_version")
 
 
 class Transcript(TimestampMixin, Base):

@@ -11,4 +11,4 @@ class SchemaTests(unittest.TestCase):
         engine = create_engine("sqlite://")
         Base.metadata.create_all(engine)
         tables = set(inspect(engine).get_table_names())
-        self.assertTrue({"campaigns", "prospects", "calls", "transcripts", "recordings", "call_metrics", "prompts", "users", "audit_events"} <= tables)
+        self.assertTrue({"campaigns", "prospects", "calls", "transcripts", "recordings", "call_metrics", "prompts", "users", "audit_events", "global_settings", "audio_assets", "playbooks", "playbook_versions"} <= tables)

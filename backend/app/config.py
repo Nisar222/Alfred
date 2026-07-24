@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     threecx_timeout_seconds: float = 15.0
     threecx_test_destination: str = ""
     prerecorded_message_path: str = "/app/media/test-message.mp3"
+    audio_storage_dir: str = "/app/media/uploads"
+    max_audio_upload_bytes: int = 25 * 1024 * 1024
     threecx_test_call_enabled: bool = False
     threecx_test_call_timeout_seconds: int = 45
 

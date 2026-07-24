@@ -49,8 +49,13 @@ services:
       THREECX_TEST_CALL_ENABLED: ${THREECX_TEST_CALL_ENABLED:-false}
       THREECX_TEST_CALL_TIMEOUT_SECONDS: ${THREECX_TEST_CALL_TIMEOUT_SECONDS:-45}
       PRERECORDED_MESSAGE_PATH: ${PRERECORDED_MESSAGE_PATH:-/app/media/test-message.mp3}
+      AUDIO_STORAGE_DIR: ${AUDIO_STORAGE_DIR:-/app/media/uploads}
+      MAX_AUDIO_UPLOAD_BYTES: ${MAX_AUDIO_UPLOAD_BYTES:-26214400}
     volumes:
+      # Existing operator-provided test audio stays read-only. Browser uploads
+      # live in a separate local Docker volume, never in PostgreSQL or Git.
       - ./media:/app/media:ro
+      - audio_uploads:/app/media/uploads
     ports:
       # Bind only to loopback; put a TLS reverse proxy in front of this service.
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
@@ -71,3 +76,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  audio_uploads:

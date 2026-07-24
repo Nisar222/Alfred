@@ -47,6 +47,10 @@ class ApiIntegrationTests(unittest.TestCase):
 
     def test_campaign_to_review_and_metrics_workflow(self):
         campaign_id = self.create_campaign()
+        self.client.put("/settings", json={
+            "default_timezone": "Asia/Dubai", "default_calling_window_json": {},
+            "max_concurrent_calls": 2, "recording_retention_days": 30, "test_call_enabled": False,
+        })
 
         # Calls must not run until an operator explicitly launches the campaign.
         blocked = self.client.post(f"/campaigns/{campaign_id}/run-simulation")
@@ -107,6 +111,52 @@ class ApiIntegrationTests(unittest.TestCase):
         call_id = self.client.get(f"/calls?campaign_id={campaign_id}").json()[0]["id"]
         early_label = self.client.post(f"/calls/{call_id}/outcome", json={"outcome": "lead"})
         self.assertEqual(early_label.status_code, 409)
+
+    def test_approved_playbook_is_reusable_and_calls_keep_a_snapshot(self):
+        settings = self.client.get("/settings")
+        self.assertEqual(settings.status_code, 200)
+        updated = self.client.put("/settings", json={
+            "default_timezone": "Asia/Dubai", "default_calling_window_json": {"start": "09:00", "end": "17:00"},
+            "max_concurrent_calls": 1, "recording_retention_days": 30, "test_call_enabled": False,
+        })
+        self.assertEqual(updated.status_code, 200)
+        playbook = self.client.post("/playbooks", json={
+            "name": "Qualified introduction", "script": "Ask a discovery question before presenting the offer.",
+            "recording_enabled": True, "approve": True,
+        })
+        self.assertEqual(playbook.status_code, 201, playbook.text)
+        version_id = playbook.json()["current_version_id"]
+        first = self.client.post("/campaigns", json={"name": "Campaign one", "playbook_version_id": version_id})
+        second = self.client.post("/campaigns", json={"name": "Campaign two", "playbook_version_id": version_id})
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(second.status_code, 201, second.text)
+        queued = self.client.post(f"/campaigns/{first.json()['id']}/contacts", json=[{"phone": "+971500000009"}])
+        self.assertEqual(queued.status_code, 201, queued.text)
+        snapshot = queued.json()[0]["configuration_snapshot_json"]
+        self.assertEqual(snapshot["playbook"]["version_id"], version_id)
+        self.assertEqual(snapshot["playbook"]["script"], "Ask a discovery question before presenting the offer.")
+
+    def test_audio_upload_is_local_and_cannot_be_deleted_while_a_playbook_uses_it(self):
+        with tempfile.TemporaryDirectory() as media_dir:
+            from app.config import get_settings
+            get_settings.cache_clear()
+            # The endpoint reads its storage location from settings.  The test
+            # process uses a temporary directory instead of any real media.
+            os.environ["AUDIO_STORAGE_DIR"] = media_dir
+            get_settings.cache_clear()
+            uploaded = self.client.post("/audio-assets", files={"file": ("intro.mp3", b"fake-mp3", "audio/mpeg")})
+            self.assertEqual(uploaded.status_code, 201, uploaded.text)
+            asset = uploaded.json()
+            self.assertTrue(os.path.exists(os.path.join(media_dir, os.listdir(media_dir)[0])))
+            playbook = self.client.post("/playbooks", json={
+                "name": "Audio protected", "script": "Ask a discovery question before presenting the offer.",
+                "opening_audio_id": asset["id"], "approve": True,
+            })
+            self.assertEqual(playbook.status_code, 201, playbook.text)
+            deleted = self.client.delete(f"/audio-assets/{asset['id']}")
+            self.assertEqual(deleted.status_code, 409, deleted.text)
+            os.environ.pop("AUDIO_STORAGE_DIR", None)
+            get_settings.cache_clear()
 
 
 if __name__ == "__main__":

@@ -2,14 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Jamal Dialler</title><link rel="stylesheet" href="/styles.css">
+  <title>Jamal Dialler</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/config.css">
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="#today" aria-label="Jamal Dialler home"><span class="brand-mark">J</span><span>Jamal <b>Dialler</b></span></a>
     <div class="topbar-actions"><span id="health" class="connection"><i></i> Checking connection</span><button class="quiet-button" id="new-campaign">New campaign</button></div>
   </header>
-  <main id="today">
+  <nav class="app-nav" aria-label="Main navigation">
+    <div><button class="nav-link active" data-view="today">Today</button><button class="nav-link" data-view="call-log">Call log</button><button class="nav-link" data-view="settings">Settings</button></div>
+  </nav>
+  <main id="today" class="app-main">
+    <section id="today-view" class="app-view active-view">
     <section class="welcome">
       <div><p class="date-label" id="today-date">TODAY</p><h1>Good morning, Jamal.</h1><p class="subhead" id="campaign-summary">Your calling day is ready when you are.</p></div>
       <div class="secure-note"><span>⌁</span> Your customer data stays private</div>
@@ -41,8 +45,30 @@
     </section>
 
     <section class="campaign-section" aria-labelledby="campaigns-title"><div class="section-heading"><div><h2 id="campaigns-title">Your campaigns</h2><p>Start, pause, or continue a calling day.</p></div><button id="campaign-add" class="secondary-button small">+ New campaign</button></div><div id="campaigns" class="campaign-list"></div></section>
+    </section>
+
+    <section id="call-log-view" class="app-view" aria-labelledby="call-log-title">
+      <div class="page-heading"><div><p class="eyebrow">EVERY CALL, IN ONE PLACE</p><h1 id="call-log-title">Call log</h1><p>See what happened, listen when recordings are ready, and label the outcome.</p></div><button id="call-log-review" class="primary-button">Review calls <span>→</span></button></div>
+      <div class="log-summary" id="log-summary"></div>
+      <div class="call-log-card panel"><div class="call-log-toolbar"><strong id="call-log-count">0 calls</strong><span>Newest first</span></div><div id="call-log-list" class="call-log-list"></div></div>
+    </section>
+
+    <section id="settings-view" class="app-view" aria-labelledby="settings-title">
+      <div class="page-heading"><div><p class="eyebrow">KEEP ALFRED WORKING YOUR WAY</p><h1 id="settings-title">Settings</h1><p>Simple controls for when and how Alfred makes calls. Your private connection details stay hidden.</p></div></div>
+      <form id="settings-form" class="settings-layout">
+        <article class="settings-card panel"><div class="settings-heading"><div><span class="settings-icon mint">◷</span><div><h2>Calling schedule</h2><p>Only make calls when it is appropriate.</p></div></div></div><div class="settings-fields two-columns"><label>Calling hours<div class="input-pair"><input name="start-hour" value="09:00" aria-label="Start time"><span>to</span><input name="end-hour" value="17:00" aria-label="End time"></div></label><label>Timezone<select name="timezone"><option>Asia/Dubai</option><option>Europe/London</option><option>America/New_York</option></select></label></div></article>
+        <article class="settings-card panel"><div class="settings-heading"><div><span class="settings-icon blue">☎</span><div><h2>Calling capacity</h2><p>Start small. Increase this when you are confident.</p></div></div></div><div class="settings-fields"><label>Calls at the same time<select name="concurrent"><option value="1">1 call — recommended while testing</option><option value="2">2 calls</option><option value="4">4 calls</option><option value="8">8 calls</option></select><small>Alfred will never start more calls than this.</small></label></div></article>
+        <article class="settings-card panel"><div class="settings-heading"><div><span class="settings-icon amber">◉</span><div><h2>Recordings</h2><p>Each playbook decides whether to record calls. Set the default retention period here.</p></div></div></div><div class="settings-fields"><label>Keep recordings for<select name="retention"><option value="90">90 days</option><option value="30">30 days</option><option value="180">180 days</option><option value="3650">Until I delete them</option></select></label></div></article>
+        <article class="settings-card panel"><div class="settings-heading"><div><span class="settings-icon mint">✦</span><div><h2>Call playbooks</h2><p>Approved greetings and scripts that campaigns can reuse.</p></div></div><button class="quiet-button" type="button" id="new-playbook">+ New playbook</button></div><div id="playbook-list" class="playbook-list"></div></article>
+        <article class="settings-card panel"><div class="settings-heading"><div><span class="settings-icon blue">♫</span><div><h2>Audio library</h2><p>Opening messages stay privately on this server.</p></div></div><label class="upload-button">Upload MP3 or WAV<input id="audio-upload" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,.mp3,.wav" hidden></label></div><p class="upload-note" id="audio-upload-note">Choose an opening message to use in a playbook.</p><div id="audio-list" class="audio-list"></div></article>
+        <article class="settings-card panel safety-card"><div class="settings-heading"><div><span class="settings-icon amber">⌁</span><div><h2>Safe test calling</h2><p>Testing is always limited to your approved test number or extension.</p></div></div></div><div class="settings-fields"><label class="toggle-line"><span><strong>Allow a test call</strong><small id="test-call-note">Locked — turn on only when you are ready to receive it.</small></span><input name="test-calling" type="checkbox"><i></i></label></div></article>
+        <article class="settings-card panel health-card"><div class="settings-heading"><div><span class="settings-icon blue">✓</span><div><h2>Connection health</h2><p>Everything Alfred needs to run calls.</p></div></div></div><div id="connection-list" class="connection-list"></div></article>
+        <div class="settings-save"><span id="settings-saved" role="status"></span><button class="primary-button" type="submit">Save settings</button></div>
+      </form>
+    </section>
   </main>
 
-  <dialog id="campaign-dialog"><form id="campaign-form" method="dialog"><button class="close" value="cancel" aria-label="Close">×</button><p class="eyebrow">START A CALLING DAY</p><h2>Create your campaign</h2><p class="dialog-intro">Keep this simple. You can refine the script as you learn.</p><label>Campaign name<input name="name" required minlength="2" placeholder="e.g. August business outreach"></label><label>Your opening script<textarea name="script" required minlength="10" placeholder="Write the greeting, a few discovery questions, and your offer."></textarea></label><div class="dialog-actions"><button type="button" class="text-button cancel">Not now</button><button class="primary-button" value="default">Create campaign <span>→</span></button></div></form></dialog>
+  <dialog id="campaign-dialog"><form id="campaign-form" method="dialog"><button class="close" value="cancel" aria-label="Close">×</button><p class="eyebrow">START A CALLING DAY</p><h2>Create your campaign</h2><p class="dialog-intro">Choose an approved playbook. The greeting and audio stay consistent across every call.</p><label>Campaign name<input name="name" required minlength="2" placeholder="e.g. August business outreach"></label><label>Call playbook<select name="playbook_id" id="campaign-playbook" required></select><small class="field-note">Only approved playbooks can be used for calls.</small></label><div class="dialog-grid"><label>Calling hours<div class="input-pair"><input name="start_hour" value="09:00" aria-label="Start time"><span>to</span><input name="end_hour" value="17:00" aria-label="End time"></div></label><label>Timezone<select name="timezone"><option>Asia/Dubai</option><option>Europe/London</option><option>America/New_York</option></select></label><label>Caller ID<input name="caller_id" placeholder="Use system default"></label><label>Calls at once<select name="max_concurrent_calls"><option value="">Use system default</option><option value="1">1 call</option><option value="2">2 calls</option><option value="4">4 calls</option><option value="8">8 calls</option></select></label></div><div class="dialog-actions"><button type="button" class="text-button cancel">Not now</button><button class="primary-button" value="default">Create campaign <span>→</span></button></div></form></dialog>
+  <dialog id="playbook-dialog"><form id="playbook-form" method="dialog"><button class="close" value="cancel" aria-label="Close">×</button><p class="eyebrow">CALL PLAYBOOK</p><h2 id="playbook-dialog-title">Create a playbook</h2><p class="dialog-intro">Use a clear name so Jamal always knows what callers will hear.</p><input type="hidden" name="id"><label>Playbook name<input name="name" required minlength="2" placeholder="e.g. Klarna business introduction"></label><label>Approved opening script<textarea name="script" required minlength="10" placeholder="The greeting, discovery questions, and offer."></textarea></label><label>Opening audio<select name="audio_asset_id" id="playbook-audio"><option value="">No prerecorded opening</option></select></label><label class="toggle-line"><span><strong>Record these calls</strong><small>Keep calls available for review</small></span><input name="record_calls" type="checkbox" checked><i></i></label><label class="toggle-line"><span><strong>Approved for campaigns</strong><small>Only approved playbooks can be selected</small></span><input name="approved" type="checkbox"><i></i></label><div class="dialog-actions"><button type="button" class="text-button cancel-playbook">Not now</button><button class="primary-button" value="default">Save playbook <span>→</span></button></div></form></dialog>
   <script src="/app.js"></script>
 </body></html>
