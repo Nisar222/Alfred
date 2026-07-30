@@ -16,7 +16,7 @@ from .models import (AudioAsset, AudioAssetStatus, Call, CallStatus, Campaign, C
                      GlobalSettings, Playbook, PlaybookStatus, PlaybookVersion)
 from .schemas import (AudioAssetOut, CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult,
                       GlobalSettingsOut, GlobalSettingsUpdate, OutcomeUpdate, PlaybookCreate,
-                      PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut)
+                      PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, TestCallRequest)
 from .services import daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
 from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
@@ -135,6 +135,30 @@ def test_prerecorded_message(db: Session = Depends(get_db)):
         if client:
             client.close()
     return {"status": "completed", "destination": settings.threecx_test_destination, "message": "prerecorded message played"}
+
+
+@app.post("/integrations/3cx/test-call")
+def place_individual_test_call(payload: TestCallRequest, db: Session = Depends(get_db)):
+    """An operator-triggered, one-off test call; never part of a campaign."""
+    settings = get_settings()
+    if settings.call_provider != "threecx":
+        raise HTTPException(409, "3CX is not configured on this VPS")
+    if not settings.threecx_test_call_enabled or not _global_settings(db).test_call_enabled:
+        raise HTTPException(409, "Test calling is locked. Enable it in Alfred Settings and on the VPS when ready.")
+    client = None
+    call = None
+    try:
+        client = ThreeCXClient(settings)
+        call = client.start_test_call(payload.destination)
+        client.wait_until_connected(call)
+        client.play_prerecorded_message(call, Path(settings.prerecorded_message_path))
+        client.drop_call(call)
+    except ThreeCXError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    finally:
+        if client:
+            client.close()
+    return {"status": "completed", "destination": payload.destination, "message": "prerecorded message played"}
 
 
 @app.get("/settings", response_model=GlobalSettingsOut)

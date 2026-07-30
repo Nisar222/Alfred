@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 from pydantic import BaseModel, Field
 from .models import AudioAssetStatus, CampaignStatus, CallStatus, Outcome, PlaybookStatus
 
@@ -26,6 +27,14 @@ class Contact(BaseModel):
     phone: str = Field(min_length=3, max_length=40)
     name: str | None = None
     details: str | None = None
+
+
+class TestCallRequest(BaseModel):
+    destination: str = Field(min_length=8, max_length=20)
+
+    def model_post_init(self, __context) -> None:
+        if not re.fullmatch(r"\+[1-9]\d{7,14}", self.destination):
+            raise ValueError("Use an international phone number, for example +16282187213")
 
 
 class OutcomeUpdate(BaseModel):
