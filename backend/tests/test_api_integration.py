@@ -6,6 +6,7 @@ telephony, or any customer data.
 import os
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -13,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base, get_db
 from app.main import app
+from app.threecx import ThreeCXTestCall
 
 
 class ApiIntegrationTests(unittest.TestCase):
@@ -156,6 +158,42 @@ class ApiIntegrationTests(unittest.TestCase):
             deleted = self.client.delete(f"/audio-assets/{asset['id']}")
             self.assertEqual(deleted.status_code, 409, deleted.text)
             os.environ.pop("AUDIO_STORAGE_DIR", None)
+            get_settings.cache_clear()
+
+    def test_place_next_live_call_is_vps_locked_and_updates_the_call_log(self):
+        """The first live path is manually triggered and never batch-dials."""
+        from app.config import get_settings
+        with tempfile.TemporaryDirectory() as media_dir, patch.dict(os.environ, {
+            "CALL_PROVIDER": "threecx",
+            "THREECX_CAMPAIGN_CALLING_ENABLED": "true",
+            "AUDIO_STORAGE_DIR": media_dir,
+        }, clear=False):
+            get_settings.cache_clear()
+            uploaded = self.client.post("/audio-assets", files={"file": ("opening.mp3", b"audio", "audio/mpeg")})
+            self.assertEqual(uploaded.status_code, 201, uploaded.text)
+            playbook = self.client.post("/playbooks", json={
+                "name": "Live test opening", "script": "Ask a discovery question before presenting the offer.",
+                "opening_audio_id": uploaded.json()["id"], "approve": True,
+            })
+            self.assertEqual(playbook.status_code, 201, playbook.text)
+            campaign = self.client.post("/campaigns", json={
+                "name": "One safe live call", "playbook_version_id": playbook.json()["current_version_id"],
+            })
+            self.assertEqual(campaign.status_code, 201, campaign.text)
+            campaign_id = campaign.json()["id"]
+            self.client.post(f"/campaigns/{campaign_id}/contacts", json=[{"phone": "101", "name": "Internal test"}])
+            self.client.post(f"/campaigns/{campaign_id}/launch")
+            fake_call = ThreeCXTestCall(participant_id=72, destination="101", initial_status="ok", initial_reason="ok")
+            with patch("app.main.ThreeCXClient") as client_class:
+                client = MagicMock()
+                client.start_test_call.return_value = fake_call
+                client_class.return_value = client
+                response = self.client.post(f"/campaigns/{campaign_id}/place-next-call")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["status"], "completed")
+            self.assertEqual(response.json()["provider_call_id"], "72")
+            client.play_prerecorded_message.assert_called_once()
+            client.drop_call.assert_called_once_with(fake_call)
             get_settings.cache_clear()
 
 
