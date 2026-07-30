@@ -184,7 +184,7 @@ class ApiIntegrationTests(unittest.TestCase):
             self.client.post(f"/campaigns/{campaign_id}/contacts", json=[{"phone": "101", "name": "Internal test"}])
             self.client.post(f"/campaigns/{campaign_id}/launch")
             fake_call = ThreeCXTestCall(participant_id=72, destination="101", initial_status="ok", initial_reason="ok")
-            with patch("app.main.ThreeCXClient") as client_class:
+            with patch("app.dispatcher.ThreeCXClient") as client_class:
                 client = MagicMock()
                 client.start_test_call.return_value = fake_call
                 client_class.return_value = client

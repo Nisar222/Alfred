@@ -1,7 +1,6 @@
 import csv
 import hashlib
 import os
-import time
 import uuid
 from contextlib import asynccontextmanager
 from io import StringIO
@@ -20,12 +19,18 @@ from .schemas import (AudioAssetOut, CallOut, CampaignCreate, CampaignOut, Conta
                       PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut)
 from .services import daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
+from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    yield
+    dispatcher = CampaignDispatcher()
+    dispatcher.start()
+    try:
+        yield
+    finally:
+        dispatcher.stop()
 
 
 app = FastAPI(title="Jamal Dialler API", version="0.1.0", lifespan=lifespan)
@@ -354,61 +359,10 @@ def place_next_live_call(campaign_id: int, db: Session = Depends(get_db)):
     cannot exceed one in-progress call while this first live workflow is being
     proven. Every result updates the already-queued call-log row.
     """
-    settings = get_settings()
-    if settings.call_provider != "threecx":
-        raise HTTPException(409, "3CX calling is not configured on this VPS")
-    if not settings.threecx_campaign_calling_enabled:
-        raise HTTPException(409, "Live campaign calling is locked on the VPS")
-    campaign = db.get(Campaign, campaign_id)
-    if not campaign:
-        raise HTTPException(404, "Campaign not found")
-    if campaign.status != CampaignStatus.active:
-        raise HTTPException(409, "Start the campaign before placing its next call")
-    if not campaign.playbook_version or campaign.playbook_version.status != PlaybookStatus.approved:
-        raise HTTPException(422, "Choose an approved call playbook before placing a live call")
-    audio = campaign.playbook_version.opening_audio
-    if not audio or audio.status != AudioAssetStatus.ready:
-        raise HTTPException(422, "The selected playbook needs an available opening audio file")
-    audio_path = Path(settings.audio_storage_dir) / audio.storage_key
-    if not audio_path.is_file():
-        raise HTTPException(409, "The selected opening audio is missing from local VPS storage")
-    in_progress = db.scalar(select(Call.id).where(Call.status == CallStatus.in_progress).limit(1))
-    if in_progress:
-        raise HTTPException(409, "A live call is already in progress. Wait for it to finish before placing another.")
-    call = db.scalar(
-        select(Call).where(Call.campaign_id == campaign_id, Call.status == CallStatus.queued)
-        .order_by(Call.created_at, Call.id).limit(1)
-    )
-    if not call:
-        raise HTTPException(409, "There are no queued contacts left in this campaign")
-
-    from datetime import datetime, timezone
-    call.status = CallStatus.in_progress
-    call.started_at = datetime.now(timezone.utc)
-    db.commit()
-    started = time.monotonic()
-    client = None
-    provider_call = None
     try:
-        client = ThreeCXClient(settings)
-        provider_call = client.start_test_call(call.phone)
-        call.provider_call_id = str(provider_call.participant_id)
-        db.commit()
-        client.wait_until_connected(provider_call)
-        client.play_prerecorded_message(provider_call, audio_path)
-        client.drop_call(provider_call)
-        call.status = CallStatus.completed
-        call.duration_seconds = max(0, round(time.monotonic() - started))
-        call.completed_at = datetime.now(timezone.utc)
-    except ThreeCXError as exc:
-        call.status = CallStatus.failed
-        call.failure_reason = str(exc)
-        call.completed_at = datetime.now(timezone.utc)
-    finally:
-        if client:
-            client.close()
-    db.commit(); db.refresh(call)
-    return call
+        return place_next_call(campaign_id, db)
+    except DispatchError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.get("/calls", response_model=list[CallOut])
