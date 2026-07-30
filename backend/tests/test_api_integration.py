@@ -165,7 +165,6 @@ class ApiIntegrationTests(unittest.TestCase):
         from app.config import get_settings
         with tempfile.TemporaryDirectory() as media_dir, patch.dict(os.environ, {
             "CALL_PROVIDER": "threecx",
-            "THREECX_CAMPAIGN_CALLING_ENABLED": "true",
             "AUDIO_STORAGE_DIR": media_dir,
         }, clear=False):
             get_settings.cache_clear()
@@ -183,6 +182,11 @@ class ApiIntegrationTests(unittest.TestCase):
             campaign_id = campaign.json()["id"]
             self.client.post(f"/campaigns/{campaign_id}/contacts", json=[{"phone": "101", "name": "Internal test"}])
             self.client.post(f"/campaigns/{campaign_id}/launch")
+            self.client.put("/settings", json={
+                "default_timezone": "Asia/Dubai", "default_calling_window_json": {},
+                "max_concurrent_calls": 1, "recording_retention_days": 30,
+                "test_call_enabled": False, "live_campaign_calling_enabled": True,
+            })
             fake_call = ThreeCXTestCall(participant_id=72, destination="101", initial_status="ok", initial_reason="ok")
             with patch("app.dispatcher.ThreeCXClient") as client_class:
                 client = MagicMock()

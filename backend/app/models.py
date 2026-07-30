@@ -180,6 +180,7 @@ class GlobalSettings(TimestampMixin, Base):
     max_concurrent_calls: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     recording_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     test_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    live_campaign_calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class AudioAsset(TimestampMixin, Base):

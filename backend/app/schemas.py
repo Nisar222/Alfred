@@ -68,6 +68,7 @@ class GlobalSettingsUpdate(BaseModel):
     max_concurrent_calls: int = Field(default=1, ge=1, le=16)
     recording_retention_days: int = Field(default=30, ge=1, le=3650)
     test_call_enabled: bool = False
+    live_campaign_calling_enabled: bool = False
 
 
 class GlobalSettingsOut(GlobalSettingsUpdate):

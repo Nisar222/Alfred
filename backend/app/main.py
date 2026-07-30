@@ -117,7 +117,7 @@ def test_prerecorded_message(db: Session = Depends(get_db)):
     settings = get_settings()
     if settings.call_provider != "threecx":
         raise HTTPException(409, "3CX is disabled. Set CALL_PROVIDER=threecx for the controlled test.")
-    if not settings.threecx_test_call_enabled or not _global_settings(db).test_call_enabled:
+    if not _global_settings(db).test_call_enabled:
         raise HTTPException(409, "Test calling is locked. Enable it in Alfred Settings and on the VPS when ready.")
     if not settings.threecx_test_destination:
         raise HTTPException(409, "Set the single approved test destination on the VPS before calling.")
@@ -143,7 +143,7 @@ def place_individual_test_call(payload: TestCallRequest, db: Session = Depends(g
     settings = get_settings()
     if settings.call_provider != "threecx":
         raise HTTPException(409, "3CX is not configured on this VPS")
-    if not settings.threecx_test_call_enabled or not _global_settings(db).test_call_enabled:
+    if not _global_settings(db).test_call_enabled:
         raise HTTPException(409, "Test calling is locked. Enable it in Alfred Settings and on the VPS when ready.")
     client = None
     call = None

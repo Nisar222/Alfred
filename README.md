@@ -52,13 +52,12 @@ number from the browser or request body):
 ```bash
 CALL_PROVIDER=threecx
 THREECX_TEST_DESTINATION=+15551234567
-THREECX_TEST_CALL_ENABLED=false
 PRERECORDED_MESSAGE_PATH=/app/media/test-message.mp3
 ```
 
-After deployment, verify the connection first. Only when an operator is ready
-to receive the test call should they change `THREECX_TEST_CALL_ENABLED=true`,
-restart the API, and explicitly invoke:
+After deployment, verify the connection first. When an operator is ready to
+receive a test call, enable **Allow a test call** in Alfred Settings and
+explicitly invoke:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/integrations/3cx/test-prerecorded-message

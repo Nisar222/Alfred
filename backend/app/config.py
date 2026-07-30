@@ -17,11 +17,7 @@ class Settings(BaseSettings):
     prerecorded_message_path: str = "/app/media/test-message.mp3"
     audio_storage_dir: str = "/app/media/uploads"
     max_audio_upload_bytes: int = 25 * 1024 * 1024
-    threecx_test_call_enabled: bool = False
     threecx_test_call_timeout_seconds: int = 45
-    # Live campaign calls are independently locked. This is intentionally a
-    # VPS-only control: the browser cannot enable real outbound calling.
-    threecx_campaign_calling_enabled: bool = False
 
 
 @lru_cache

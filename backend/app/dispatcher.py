@@ -47,8 +47,6 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
     settings = settings or get_settings()
     if settings.call_provider != "threecx":
         raise DispatchError("3CX calling is not configured on this VPS")
-    if not settings.threecx_campaign_calling_enabled:
-        raise DispatchError("Live campaign calling is locked on the VPS")
     campaign = db.get(Campaign, campaign_id)
     if not campaign:
         raise DispatchError("Campaign not found")
@@ -67,6 +65,8 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
         raise DispatchError("The selected opening audio is missing from local VPS storage")
 
     limits = _settings(db)
+    if not limits.live_campaign_calling_enabled:
+        raise DispatchError("Live campaign calling is turned off in Alfred Settings")
     limit = campaign.max_concurrent_calls_override or limits.max_concurrent_calls
     active_for_campaign = db.scalar(select(func.count(Call.id)).where(Call.campaign_id == campaign_id, Call.status == CallStatus.in_progress)) or 0
     active_global = db.scalar(select(func.count(Call.id)).where(Call.status == CallStatus.in_progress)) or 0
@@ -135,10 +135,12 @@ class CampaignDispatcher:
     def _run(self) -> None:
         while not self.stop_event.wait(self.poll_seconds):
             settings = get_settings()
-            if settings.call_provider != "threecx" or not settings.threecx_campaign_calling_enabled:
+            if settings.call_provider != "threecx":
                 continue
             with SessionLocal() as db:
                 global_settings = _settings(db)
+                if not global_settings.live_campaign_calling_enabled:
+                    continue
                 active = db.scalar(select(func.count(Call.id)).where(Call.status == CallStatus.in_progress)) or 0
                 slots = max(0, global_settings.max_concurrent_calls - active)
                 campaigns = db.scalars(select(Campaign).where(Campaign.status == CampaignStatus.active).order_by(Campaign.id)).all()
