@@ -52,9 +52,12 @@ services:
       AUDIO_STORAGE_DIR: ${AUDIO_STORAGE_DIR:-/app/media/uploads}
       MAX_AUDIO_UPLOAD_BYTES: ${MAX_AUDIO_UPLOAD_BYTES:-26214400}
     volumes:
-      # Browser uploads live in a local Docker volume, never in PostgreSQL or
-      # Git. Do not mount the parent /app/media directory read-only: Docker
-      # cannot mount this writable child volume beneath a read-only bind mount.
+      # The operator's one controlled test message is mounted as a single
+      # read-only file. Browser uploads live in a separate local Docker
+      # volume, never in PostgreSQL or Git. Do not mount the parent
+      # /app/media directory read-only: Docker cannot mount this writable
+      # child volume beneath a read-only bind mount.
+      - ./media/test-message.mp3:/app/media/test-message.mp3:ro
       - audio_uploads:/app/media/uploads
     ports:
       # Bind only to loopback; put a TLS reverse proxy in front of this service.
