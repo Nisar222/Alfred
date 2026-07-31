@@ -75,11 +75,19 @@ class ApiIntegrationTests(unittest.TestCase):
         calls = completed.json()
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(call["status"] == "completed" and call["transcript"] for call in calls))
+        self.assertTrue(all(call["sentiment"] == "positive" for call in calls))
+        self.assertTrue(all(call["sentiment_source"] == "deterministic-v1" for call in calls))
 
         sale = self.client.post(f"/calls/{calls[0]['id']}/outcome", json={"outcome": "sale"})
         self.assertEqual(sale.status_code, 200, sale.text)
         self.assertEqual(sale.json()["outcome"], "sale")
         self.assertIsNotNone(sale.json()["metric"])
+
+        sentiment = self.client.post(f"/calls/{calls[0]['id']}/sentiment", json={"sentiment": "neutral"})
+        self.assertEqual(sentiment.status_code, 200, sentiment.text)
+        self.assertEqual(sentiment.json()["sentiment"], "neutral")
+        self.assertEqual(sentiment.json()["sentiment_source"], "reviewer")
+        self.assertEqual(sentiment.json()["sentiment_confidence"], 100)
 
         reject = self.client.post(f"/calls/{calls[1]['id']}/outcome", json={"outcome": "reject"})
         self.assertEqual(reject.status_code, 200, reject.text)

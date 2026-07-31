@@ -1,7 +1,36 @@
 from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from .models import Call, CallMetric, CallStatus, Outcome
+from .models import Call, CallMetric, CallStatus, Outcome, Sentiment
+
+
+def analyze_sentiment(call: Call) -> None:
+    """Small transparent MVP signal; replace with the local QA model later.
+
+    It intentionally returns ``unknown`` when there is no transcript rather
+    than inventing a judgement from call duration or sales outcome.
+    """
+    transcript = (call.transcript or "").lower()
+    if not transcript.strip():
+        call.sentiment = Sentiment.unknown
+        call.sentiment_confidence = None
+        call.sentiment_source = "not_available"
+        return
+
+    positive_words = ("thank", "great", "interested", "helpful", "yes", "appointment", "schedule", "sounds good")
+    negative_words = ("not interested", "stop calling", "don't call", "do not call", "annoying", "bad", "no thanks")
+    positive_hits = sum(word in transcript for word in positive_words)
+    negative_hits = sum(word in transcript for word in negative_words)
+    if positive_hits > negative_hits:
+        call.sentiment = Sentiment.positive
+        call.sentiment_confidence = min(90, 55 + positive_hits * 10)
+    elif negative_hits > positive_hits:
+        call.sentiment = Sentiment.negative
+        call.sentiment_confidence = min(90, 55 + negative_hits * 10)
+    else:
+        call.sentiment = Sentiment.neutral
+        call.sentiment_confidence = 55
+    call.sentiment_source = "deterministic-v1"
 
 
 def score_call(call: Call) -> CallMetric:
@@ -30,6 +59,7 @@ def simulate_call(call: Call) -> None:
         "Prospect: What is this about?\n"
         "Agent: We help businesses reduce time spent on follow-up. Can I schedule a 15-minute appointment?"
     )
+    analyze_sentiment(call)
 
 
 def daily_metrics(db: Session) -> dict:

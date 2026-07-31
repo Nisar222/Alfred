@@ -39,6 +39,14 @@ class Outcome(str, enum.Enum):
     wrong_number = "wrong_number"
 
 
+class Sentiment(str, enum.Enum):
+    """A review aid only; the operator's outcome remains the business truth."""
+    positive = "positive"
+    neutral = "neutral"
+    negative = "negative"
+    unknown = "unknown"
+
+
 class TranscriptSource(str, enum.Enum):
     provider = "provider"
     whisper = "whisper"
@@ -143,6 +151,11 @@ class Call(TimestampMixin, Base):
     outcome: Mapped[Outcome | None] = mapped_column(Enum(Outcome, name="call_outcome"), index=True)
     outcome_labeled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     outcome_labeled_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    sentiment: Mapped[Sentiment] = mapped_column(
+        Enum(Sentiment, name="call_sentiment"), default=Sentiment.unknown, nullable=False, index=True
+    )
+    sentiment_confidence: Mapped[int | None] = mapped_column(Integer)
+    sentiment_source: Mapped[str] = mapped_column(String(40), default="not_available", nullable=False)
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     provider_call_id: Mapped[str | None] = mapped_column(String(120), unique=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(120), unique=True)

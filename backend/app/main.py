@@ -16,8 +16,8 @@ from .models import (AudioAsset, AudioAssetStatus, Call, CallStatus, Campaign, C
                      GlobalSettings, Playbook, PlaybookStatus, PlaybookVersion)
 from .schemas import (AudioAssetOut, CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult,
                       GlobalSettingsOut, GlobalSettingsUpdate, OutcomeUpdate, PlaybookCreate,
-                      PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, TestCallRequest)
-from .services import daily_metrics, score_call, simulate_call
+                      PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, SentimentUpdate, TestCallRequest)
+from .services import analyze_sentiment, daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
 from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
 
@@ -416,7 +416,23 @@ def label_outcome(call_id: int, payload: OutcomeUpdate, db: Session = Depends(ge
     call.outcome = payload.outcome
     from datetime import datetime, timezone
     call.outcome_labeled_at = datetime.now(timezone.utc)
+    if call.sentiment_source == "not_available": analyze_sentiment(call)
     if not call.metric: call.metric = score_call(call)
+    db.commit(); db.refresh(call)
+    return call
+
+
+@app.post("/calls/{call_id}/sentiment", response_model=CallOut)
+def label_sentiment(call_id: int, payload: SentimentUpdate, db: Session = Depends(get_db)):
+    """Let a reviewer correct the automated signal without changing outcome."""
+    call = db.get(Call, call_id)
+    if not call:
+        raise HTTPException(404, "Call not found")
+    if call.status != CallStatus.completed:
+        raise HTTPException(409, "Only completed calls can be reviewed")
+    call.sentiment = payload.sentiment
+    call.sentiment_confidence = 100
+    call.sentiment_source = "reviewer"
     db.commit(); db.refresh(call)
     return call
 

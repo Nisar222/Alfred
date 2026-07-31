@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
 from pydantic import BaseModel, Field
-from .models import AudioAssetStatus, CampaignStatus, CallStatus, Outcome, PlaybookStatus
+from .models import AudioAssetStatus, CampaignStatus, CallStatus, Outcome, PlaybookStatus, Sentiment
 
 
 class CampaignCreate(BaseModel):
@@ -41,6 +41,10 @@ class OutcomeUpdate(BaseModel):
     outcome: Outcome
 
 
+class SentimentUpdate(BaseModel):
+    sentiment: Sentiment
+
+
 class ContactUploadResult(BaseModel):
     queued: int
 
@@ -54,6 +58,7 @@ class MetricOut(BaseModel):
 class CallOut(BaseModel):
     id: int; campaign_id: int; phone: str; prospect_name: str | None; status: CallStatus
     outcome: Outcome | None; transcript: str | None; duration_seconds: int | None; created_at: datetime
+    sentiment: Sentiment = Sentiment.unknown; sentiment_confidence: int | None = None; sentiment_source: str = "not_available"
     provider_call_id: str | None = None; failure_reason: str | None = None
     started_at: datetime | None = None; completed_at: datetime | None = None
     recording_available: bool = False
