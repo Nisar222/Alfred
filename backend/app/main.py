@@ -328,6 +328,18 @@ def pause_campaign(campaign_id: int, db: Session = Depends(get_db)):
     return campaign
 
 
+@app.delete("/campaigns/{campaign_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    if campaign.status == CampaignStatus.active:
+        raise HTTPException(409, "Pause this campaign before deleting it")
+    db.delete(campaign)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.post("/campaigns/{campaign_id}/contacts", response_model=list[CallOut], status_code=status.HTTP_201_CREATED)
 def add_contacts(campaign_id: int, contacts: list[Contact], db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)

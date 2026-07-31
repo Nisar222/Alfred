@@ -114,6 +114,16 @@ class ApiIntegrationTests(unittest.TestCase):
         early_label = self.client.post(f"/calls/{call_id}/outcome", json={"outcome": "lead"})
         self.assertEqual(early_label.status_code, 409)
 
+    def test_paused_campaign_can_be_deleted_but_active_campaign_cannot(self):
+        campaign_id = self.create_campaign()
+        self.assertEqual(self.client.post(f"/campaigns/{campaign_id}/launch").status_code, 200)
+        blocked = self.client.delete(f"/campaigns/{campaign_id}")
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(self.client.post(f"/campaigns/{campaign_id}/pause").status_code, 200)
+        deleted = self.client.delete(f"/campaigns/{campaign_id}")
+        self.assertEqual(deleted.status_code, 204)
+        self.assertFalse(any(item["id"] == campaign_id for item in self.client.get("/campaigns").json()))
+
     def test_approved_playbook_is_reusable_and_calls_keep_a_snapshot(self):
         settings = self.client.get("/settings")
         self.assertEqual(settings.status_code, 200)

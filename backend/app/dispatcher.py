@@ -42,6 +42,25 @@ def _settings(db: Session) -> GlobalSettings:
     return value
 
 
+def _is_dispatchable(campaign: Campaign, db: Session, settings: Settings) -> bool:
+    """Skip campaigns that cannot use a call line right now.
+
+    A paused, empty, out-of-hours, or misconfigured campaign must never stop
+    a later valid campaign from using the available capacity.
+    """
+    if campaign.status != CampaignStatus.active or not _within_calling_window(campaign):
+        return False
+    version = campaign.playbook_version
+    if not version or version.status != PlaybookStatus.approved:
+        return False
+    audio = version.opening_audio
+    if not audio or audio.status != AudioAssetStatus.ready:
+        return False
+    if not (Path(settings.audio_storage_dir) / audio.storage_key).is_file():
+        return False
+    return bool(db.scalar(select(Call.id).where(Call.campaign_id == campaign.id, Call.status == CallStatus.queued).limit(1)))
+
+
 def place_next_call(campaign_id: int, db: Session, settings: Settings | None = None) -> Call:
     """Claim and run one queued call.  Safe to call from HTTP or the worker."""
     settings = settings or get_settings()
@@ -145,6 +164,8 @@ class CampaignDispatcher:
                 slots = max(0, global_settings.max_concurrent_calls - active)
                 campaigns = db.scalars(select(Campaign).where(Campaign.status == CampaignStatus.active).order_by(Campaign.id)).all()
                 for campaign in campaigns:
+                    if not _is_dispatchable(campaign, db, settings):
+                        continue
                     campaign_active = db.scalar(select(func.count(Call.id)).where(
                         Call.campaign_id == campaign.id, Call.status == CallStatus.in_progress
                     )) or 0
