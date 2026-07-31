@@ -124,6 +124,17 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 204)
         self.assertFalse(any(item["id"] == campaign_id for item in self.client.get("/campaigns").json()))
 
+    def test_campaign_completes_when_every_call_has_finished(self):
+        from app.dispatcher import reconcile_campaign_completion
+        campaign_id = self.create_campaign()
+        self.client.post(f"/campaigns/{campaign_id}/contacts", json=[{"phone": "+971500000010"}])
+        self.client.post(f"/campaigns/{campaign_id}/launch")
+        self.client.post(f"/campaigns/{campaign_id}/run-simulation")
+        with self.session_factory() as db:
+            reconcile_campaign_completion(db)
+        campaign = next(item for item in self.client.get("/campaigns").json() if item["id"] == campaign_id)
+        self.assertEqual(campaign["status"], "completed")
+
     def test_approved_playbook_is_reusable_and_calls_keep_a_snapshot(self):
         settings = self.client.get("/settings")
         self.assertEqual(settings.status_code, 200)

@@ -61,6 +61,23 @@ def _is_dispatchable(campaign: Campaign, db: Session, settings: Settings) -> boo
     return bool(db.scalar(select(Call.id).where(Call.campaign_id == campaign.id, Call.status == CallStatus.queued).limit(1)))
 
 
+def reconcile_campaign_completion(db: Session) -> None:
+    """Close active campaigns only after at least one call reaches a final state."""
+    active_campaigns = db.scalars(select(Campaign).where(Campaign.status == CampaignStatus.active)).all()
+    terminal = (CallStatus.completed, CallStatus.failed, CallStatus.cancelled)
+    changed = False
+    for campaign in active_campaigns:
+        total = db.scalar(select(func.count(Call.id)).where(Call.campaign_id == campaign.id)) or 0
+        unfinished = db.scalar(select(func.count(Call.id)).where(
+            Call.campaign_id == campaign.id, Call.status.not_in(terminal)
+        )) or 0
+        if total and unfinished == 0:
+            campaign.status = CampaignStatus.completed
+            changed = True
+    if changed:
+        db.commit()
+
+
 def place_next_call(campaign_id: int, db: Session, settings: Settings | None = None) -> Call:
     """Claim and run one queued call.  Safe to call from HTTP or the worker."""
     settings = settings or get_settings()
@@ -158,6 +175,7 @@ class CampaignDispatcher:
                 continue
             with SessionLocal() as db:
                 global_settings = _settings(db)
+                reconcile_campaign_completion(db)
                 if not global_settings.live_campaign_calling_enabled:
                     continue
                 active = db.scalar(select(func.count(Call.id)).where(Call.status == CallStatus.in_progress)) or 0
