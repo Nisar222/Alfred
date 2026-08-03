@@ -80,11 +80,67 @@ class TimestampMixin:
 
 class User(TimestampMixin, Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("role IN ('owner', 'supervisor', 'agent', 'operator')", name="ck_users_role"),
+        UniqueConstraint("threecx_user_id", name="uq_users_threecx_user_id"),
+        UniqueConstraint("threecx_extension", name="uq_users_threecx_extension"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(150))
     role: Mapped[str] = mapped_column(String(40), default="operator", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Passwords are never stored directly.  This stays nullable through the
+    # directory-link rollout: a 3CX record is not automatically an Alfred
+    # account, and cannot log in until an owner explicitly provisions it.
+    password_hash: Mapped[str | None] = mapped_column(String(512))
+    # These links are set only by an Alfred owner after reviewing the 3CX
+    # directory.  A 3CX directory sync must never activate or authenticate a
+    # person merely because their record appears in 3CX.
+    threecx_user_id: Mapped[str | None] = mapped_column(String(80))
+    threecx_extension: Mapped[str | None] = mapped_column(String(20))
+    threecx_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSession(Base):
+    """Revocable opaque browser session; raw tokens are never persisted."""
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_auth_sessions_token_hash"),
+        Index("ix_auth_sessions_active", "user_id", "expires_at", "revoked_at"),
+    )
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    csrf_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    user: Mapped["User"] = relationship()
+
+
+class AgentNotification(Base):
+    """Durable agent popup created from a frozen call/campaign snapshot."""
+    __tablename__ = "agent_notifications"
+    __table_args__ = (
+        UniqueConstraint("call_id", name="uq_agent_notifications_call_id"),
+        Index("ix_agent_notifications_recipient_unread", "recipient_user_id", "read_at", "created_at"),
+        Index("ix_agent_notifications_extension_unread", "recipient_extension", "read_at", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    call_id: Mapped[int] = mapped_column(ForeignKey("calls.id", ondelete="CASCADE"), nullable=False)
+    recipient_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    recipient_extension: Mapped[str | None] = mapped_column(String(20))
+    customer_name: Mapped[str | None] = mapped_column(String(120))
+    campaign_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    menu_option: Mapped[str | None] = mapped_column(String(1))
+    routed_destination: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    call: Mapped["Call"] = relationship()
+    recipient_user: Mapped["User | None"] = relationship()
 
 
 class Prompt(TimestampMixin, Base):
@@ -114,6 +170,7 @@ class Campaign(TimestampMixin, Base):
     playbook_version_id: Mapped[int | None] = mapped_column(ForeignKey("playbook_versions.id", ondelete="RESTRICT"), index=True)
     caller_id_override: Mapped[str | None] = mapped_column(String(80))
     max_concurrent_calls_override: Mapped[int | None] = mapped_column(Integer)
+    dtmf_queue_extension_override: Mapped[str | None] = mapped_column(String(20))
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     calls: Mapped[list["Call"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
     prompt: Mapped["Prompt | None"] = relationship()
@@ -141,6 +198,9 @@ class Call(TimestampMixin, Base):
         Index("ix_calls_campaign_outcome", "campaign_id", "outcome"),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
+    previous_attempt_id: Mapped[int | None] = mapped_column(ForeignKey("calls.id", ondelete="RESTRICT"), unique=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
     prospect_id: Mapped[int | None] = mapped_column(ForeignKey("prospects.id", ondelete="SET NULL"), index=True)
     # Snapshots preserve the historical dialled identity if the prospect changes.
@@ -160,6 +220,10 @@ class Call(TimestampMixin, Base):
     provider_call_id: Mapped[str | None] = mapped_column(String(120), unique=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(120), unique=True)
     failure_reason: Mapped[str | None] = mapped_column(Text)
+    failure_category: Mapped[str | None] = mapped_column(String(40))
+    dtmf_digit: Mapped[str | None] = mapped_column(String(1))
+    routed_destination: Mapped[str | None] = mapped_column(String(20))
+    routing_status: Mapped[str | None] = mapped_column(String(40))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     configuration_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
@@ -168,6 +232,7 @@ class Call(TimestampMixin, Base):
     metric: Mapped["CallMetric | None"] = relationship(back_populates="call", cascade="all, delete-orphan", uselist=False)
     _transcript: Mapped["Transcript | None"] = relationship(back_populates="call", cascade="all, delete-orphan", uselist=False)
     recording: Mapped["Recording | None"] = relationship(back_populates="call", cascade="all, delete-orphan", uselist=False)
+    previous_attempt: Mapped["Call | None"] = relationship(remote_side=[id], foreign_keys=[previous_attempt_id])
 
     # Compatibility boundary for the current API.  New integrations should use
     # the Transcript row (including segments and source) directly.
@@ -192,6 +257,14 @@ class GlobalSettings(TimestampMixin, Base):
     default_calling_window_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     max_concurrent_calls: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     recording_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    retry_max_attempts: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    retry_delay_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    retry_no_answer: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    retry_busy: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    retry_provider_failure: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    dtmf_routing_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    dtmf_menu_digit: Mapped[str] = mapped_column(String(1), default="1", nullable=False)
+    dtmf_queue_extension: Mapped[str | None] = mapped_column(String(20))
     test_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     live_campaign_calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

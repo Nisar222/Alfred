@@ -3,7 +3,7 @@
 The database is the queue authority.  The process only claims queued rows;
 therefore a restart cannot create an invisible in-memory campaign queue.
 """
-from datetime import datetime, timezone
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 import threading
 import time
@@ -16,22 +16,50 @@ from .config import Settings, get_settings
 from .database import SessionLocal
 from .models import AudioAssetStatus, Call, CallStatus, Campaign, CampaignStatus, GlobalSettings, PlaybookStatus
 from .threecx import ThreeCXClient, ThreeCXError
+from .notifications import ensure_routing_notification
 
 
 class DispatchError(RuntimeError):
     pass
 
 
-def _within_calling_window(campaign: Campaign) -> bool:
+def _within_calling_window(campaign: Campaign, now: datetime | None = None) -> bool:
     window = campaign.calling_window_json or {}
     start, end = window.get("start"), window.get("end")
     if not start or not end:
         return True
     try:
-        now = datetime.now(ZoneInfo(campaign.timezone)).strftime("%H:%M")
+        local_now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(campaign.timezone)).strftime("%H:%M")
     except Exception:
         return True
-    return start <= now < end if start <= end else now >= start or now < end
+    return start <= local_now < end if start <= end else local_now >= start or local_now < end
+
+
+def _next_allowed_time(campaign: Campaign, requested: datetime) -> datetime:
+    """Move a retry forward to the next opening of its frozen campaign hours."""
+    window = campaign.calling_window_json or {}
+    start, end = window.get("start"), window.get("end")
+    if not start or not end:
+        return requested
+    try:
+        zone = ZoneInfo(campaign.timezone)
+        local = requested.astimezone(zone)
+        if _within_calling_window(campaign, requested):
+            return requested
+        hour, minute = (int(value) for value in start.split(":"))
+        opening = datetime.combine(local.date(), datetime_time(hour, minute), zone)
+        if local >= opening and start <= end:
+            opening += timedelta(days=1)
+        elif start > end and local.strftime("%H:%M") < end:
+            return requested
+        return opening.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return requested
+
+
+def _eligible_queue_clause(now: datetime | None = None):
+    now = now or datetime.now(timezone.utc)
+    return (Call.scheduled_for.is_(None)) | (Call.scheduled_for <= now)
 
 
 def _settings(db: Session) -> GlobalSettings:
@@ -58,7 +86,39 @@ def _is_dispatchable(campaign: Campaign, db: Session, settings: Settings) -> boo
         return False
     if not (Path(settings.audio_storage_dir) / audio.storage_key).is_file():
         return False
-    return bool(db.scalar(select(Call.id).where(Call.campaign_id == campaign.id, Call.status == CallStatus.queued).limit(1)))
+    return bool(db.scalar(select(Call.id).where(
+        Call.campaign_id == campaign.id, Call.status == CallStatus.queued, _eligible_queue_clause()
+    ).limit(1)))
+
+
+def _failure_category(exc: ThreeCXError) -> str:
+    message = str(exc).lower()
+    if "busy" in message:
+        return "busy"
+    if "not answered" in message or "no answer" in message:
+        return "no_answer"
+    return "provider_failure"
+
+
+def _schedule_retry(call: Call, campaign: Campaign, db: Session) -> Call | None:
+    policy = (call.configuration_snapshot_json or {}).get("global", {})
+    category_enabled = {
+        "no_answer": policy.get("retry_no_answer", False),
+        "busy": policy.get("retry_busy", False),
+        "provider_failure": policy.get("retry_provider_failure", False),
+    }
+    max_attempts = int(policy.get("retry_max_attempts", 1))
+    if call.attempt_number >= max_attempts or not category_enabled.get(call.failure_category or "", False):
+        return None
+    requested = (call.completed_at or datetime.now(timezone.utc)) + timedelta(minutes=int(policy.get("retry_delay_minutes", 60)))
+    retry = Call(
+        campaign_id=call.campaign_id, prospect_id=call.prospect_id, phone=call.phone,
+        prospect_name=call.prospect_name, details=call.details, previous_attempt_id=call.id,
+        attempt_number=call.attempt_number + 1, scheduled_for=_next_allowed_time(campaign, requested),
+        configuration_snapshot_json=call.configuration_snapshot_json,
+    )
+    db.add(retry)
+    return retry
 
 
 def reconcile_campaign_completion(db: Session) -> None:
@@ -110,7 +170,9 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
         raise DispatchError("All configured call lines are currently in use")
 
     # PostgreSQL locks this queue row; SQLite ignores the clause for local tests.
-    call = db.scalar(select(Call).where(Call.campaign_id == campaign_id, Call.status == CallStatus.queued).order_by(Call.created_at, Call.id).limit(1).with_for_update(skip_locked=True))
+    call = db.scalar(select(Call).where(
+        Call.campaign_id == campaign_id, Call.status == CallStatus.queued, _eligible_queue_clause()
+    ).order_by(Call.scheduled_for, Call.created_at, Call.id).limit(1).with_for_update(skip_locked=True))
     if not call:
         raise DispatchError("There are no queued contacts left in this campaign")
     call.status = CallStatus.in_progress
@@ -124,15 +186,52 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
         call.provider_call_id = str(provider_call.participant_id)
         db.commit()
         client.wait_until_connected(provider_call)
-        client.play_prerecorded_message(provider_call, audio_path)
-        client.drop_call(provider_call)
+        snapshot = call.configuration_snapshot_json or {}
+        global_policy = snapshot.get("global", {})
+        campaign_policy = snapshot.get("campaign", {})
+        routing_enabled = bool(global_policy.get("dtmf_routing_enabled"))
+        destination = campaign_policy.get("dtmf_queue_extension")
+        if routing_enabled and destination:
+            with client.monitor_dtmf(provider_call) as monitor:
+                client.play_prerecorded_message(provider_call, audio_path)
+                call.dtmf_digit = monitor.wait(timeout_seconds=15)
+            if call.dtmf_digit == global_policy.get("dtmf_menu_digit", "1"):
+                call.routed_destination = str(destination)
+                try:
+                    client.route_to(provider_call, str(destination), call.id)
+                    call.routing_status = "routed"
+                    # 803 currently has one member, so its popup can be safely
+                    # assigned to that extension. Never broadcast customer
+                    # context when a destination has multiple possible agents.
+                    try:
+                        recipient_extension = client.single_member_extension(str(destination))
+                    except ThreeCXError:
+                        recipient_extension = None
+                    ensure_routing_notification(
+                        call, db, recipient_extension=recipient_extension or str(destination)
+                    )
+                except ThreeCXError as exc:
+                    call.routing_status = "route_failed"
+                    call.failure_reason = str(exc)
+                    try:
+                        client.drop_call(provider_call)
+                    except ThreeCXError:
+                        pass
+            else:
+                call.routing_status = "no_input" if call.dtmf_digit is None else "invalid_input"
+                client.drop_call(provider_call)
+        else:
+            client.play_prerecorded_message(provider_call, audio_path)
+            client.drop_call(provider_call)
         call.status = CallStatus.completed
         call.duration_seconds = max(0, round(time.monotonic() - started))
         call.completed_at = datetime.now(timezone.utc)
     except ThreeCXError as exc:
         call.status = CallStatus.failed
         call.failure_reason = str(exc)
+        call.failure_category = _failure_category(exc)
         call.completed_at = datetime.now(timezone.utc)
+        _schedule_retry(call, campaign, db)
     finally:
         if client:
             client.close()
@@ -165,7 +264,9 @@ class CampaignDispatcher:
             for call in stuck:
                 call.status = CallStatus.failed
                 call.failure_reason = "Alfred restarted before the call status was confirmed"
+                call.failure_category = "provider_failure"
                 call.completed_at = datetime.now(timezone.utc)
+                _schedule_retry(call, call.campaign, db)
             db.commit()
 
     def _run(self) -> None:

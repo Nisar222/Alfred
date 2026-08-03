@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     audio_storage_dir: str = "/app/media/uploads"
     max_audio_upload_bytes: int = 25 * 1024 * 1024
     threecx_test_call_timeout_seconds: int = 45
+    session_ttl_hours: int = 12
 
 
 @lru_cache

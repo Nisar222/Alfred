@@ -1,11 +1,14 @@
 """Small, deliberately constrained 3CX V20 Call Control client."""
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import subprocess
 import time
-from typing import Iterator
+from typing import Any, Iterator
+from urllib.parse import urlparse, urlunparse
 
 import httpx
+from websockets.sync.client import ClientConnection, connect
 
 from .config import Settings
 
@@ -26,6 +29,112 @@ class ThreeCXTestCall:
     destination: str
     initial_status: str
     initial_reason: str
+
+
+@dataclass(frozen=True)
+class ThreeCXDirectoryUser:
+    """The small, non-sensitive subset of a 3CX user needed by Alfred."""
+
+    user_id: str
+    name: str
+    extension: str | None
+    email: str | None
+
+
+@dataclass(frozen=True)
+class ThreeCXDirectoryMember:
+    """A user reference in a 3CX queue or ring group."""
+
+    user_id: str | None
+    extension: str | None
+
+
+@dataclass(frozen=True)
+class ThreeCXDirectoryGroup:
+    """Read-only representation of a 3CX queue or ring group."""
+
+    group_id: str
+    extension: str | None
+    name: str
+    members: tuple[ThreeCXDirectoryMember, ...]
+
+
+def _event_value(value: object, *names: str) -> object | None:
+    if not isinstance(value, dict):
+        return None
+    lowered = {str(key).lower(): item for key, item in value.items()}
+    return next((lowered[name.lower()] for name in names if name.lower() in lowered), None)
+
+
+def parse_dtmf_event(message: str, source_dn: str, participant_id: int) -> str | None:
+    """Return one safe DTMF digit from a 3CX Route Point event, if present."""
+    try:
+        payload = json.loads(message)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    event = _event_value(payload, "event") or payload
+    event_type = _event_value(event, "eventtype", "event_type", "type")
+    if str(event_type).lower() not in {"2", "dtmfstring", "dtmf_string"}:
+        return None
+    entity = str(_event_value(event, "entity", "path") or "")
+    if entity and f"/callcontrol/{source_dn}/participants/{participant_id}" not in entity:
+        return None
+    attached = _event_value(event, "attacheddata", "attached_data", "data")
+    if isinstance(attached, str):
+        try:
+            attached = json.loads(attached)
+        except json.JSONDecodeError:
+            pass
+    candidates = [attached]
+    if isinstance(attached, dict):
+        candidates.append(_event_value(attached, "response", "result", "dtmf_input", "dtmfstring", "dtmf", "digit"))
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            candidate = _event_value(candidate, "dtmf_input", "dtmfstring", "dtmf", "digit", "value")
+        value = str(candidate or "").strip()
+        if len(value) == 1 and value in "0123456789*#":
+            return value
+    return None
+
+
+class ThreeCXDtmfMonitor:
+    """Short-lived event channel scoped to one application-owned participant."""
+    def __init__(self, client: "ThreeCXClient", call: ThreeCXTestCall):
+        self.client = client
+        self.call = call
+        self.connection: ClientConnection | None = None
+
+    def __enter__(self) -> "ThreeCXDtmfMonitor":
+        parsed = urlparse(self.client.settings.threecx_base_url.rstrip("/"))
+        websocket_url = urlunparse(("wss" if parsed.scheme == "https" else "ws", parsed.netloc, "/callcontrol/ws", "", "", ""))
+        try:
+            self.connection = connect(
+                websocket_url, additional_headers=self.client._authorized_headers(),
+                open_timeout=self.client.settings.threecx_timeout_seconds, close_timeout=3,
+            )
+        except Exception as exc:
+            raise ThreeCXError("3CX could not open the Route Point event channel.") from exc
+        return self
+
+    def wait(self, timeout_seconds: int) -> str | None:
+        if self.connection is None:
+            raise ThreeCXError("The Route Point event channel is not connected.")
+        deadline = time.monotonic() + timeout_seconds
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                message = self.connection.recv(timeout=remaining)
+            except TimeoutError:
+                return None
+            except Exception as exc:
+                raise ThreeCXError("The Route Point event channel closed unexpectedly.") from exc
+            digit = parse_dtmf_event(str(message), self.client.source_dn, self.call.participant_id)
+            if digit is not None:
+                return digit
+        return None
+
+    def __exit__(self, *_: object) -> None:
+        if self.connection is not None:
+            self.connection.close()
 
 
 class ThreeCXClient:
@@ -120,6 +229,149 @@ class ThreeCXClient:
 
     def _authorized_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._access_token()}"}
+
+    @staticmethod
+    def _field(payload: object, *names: str) -> object | None:
+        """Read an XAPI field without depending on one casing/version."""
+        return _event_value(payload, *names)
+
+    def _xapi_collection(self, path: str) -> list[dict[str, Any]]:
+        """Read all pages of an XAPI collection using one short-lived token.
+
+        3CX XAPI uses OData-style pagination on some installations, but older
+        releases can return a plain JSON array.  Accept both without exposing
+        arbitrary response data to callers or logs.
+        """
+        headers = self._authorized_headers()
+        next_path: str | None = path
+        seen: set[str] = set()
+        rows: list[dict[str, Any]] = []
+        while next_path:
+            if next_path in seen:
+                raise ThreeCXError("3CX returned a repeating XAPI page link.")
+            seen.add(next_path)
+            try:
+                response = self.client.get(next_path, headers=headers)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise self._failure("3CX could not read its user directory.", exc) from exc
+            payload = response.json()
+            if isinstance(payload, list):
+                page = payload
+                next_path = None
+            elif isinstance(payload, dict):
+                page = self._field(payload, "value", "items") or []
+                next_link = self._field(payload, "@odata.nextLink", "odata.nextLink", "nextLink", "next")
+                next_path = str(next_link) if next_link else None
+            else:
+                raise ThreeCXError("3CX returned an invalid XAPI directory response.")
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise ThreeCXError("3CX returned an invalid XAPI directory page.")
+            rows.extend(page)
+        return rows
+
+    @classmethod
+    def _directory_user(cls, payload: dict[str, Any]) -> ThreeCXDirectoryUser | None:
+        user_id = cls._field(payload, "id", "user_id", "userId")
+        if user_id is None:
+            return None
+        name = cls._field(payload, "name", "displayName", "display_name")
+        if not name:
+            first = str(cls._field(payload, "firstName", "first_name") or "").strip()
+            last = str(cls._field(payload, "lastName", "last_name") or "").strip()
+            name = " ".join(part for part in (first, last) if part)
+        extension = cls._field(payload, "number", "extension", "extensionNumber", "dn")
+        email = cls._field(payload, "email", "emailAddress", "email_address")
+        return ThreeCXDirectoryUser(
+            user_id=str(user_id), name=str(name or "Unnamed 3CX user"),
+            extension=str(extension) if extension not in (None, "") else None,
+            email=str(email) if email not in (None, "") else None,
+        )
+
+    @classmethod
+    def _directory_group(cls, payload: dict[str, Any], member_fields: tuple[str, ...]) -> ThreeCXDirectoryGroup | None:
+        group_id = cls._field(payload, "id", "group_id", "groupId")
+        if group_id is None:
+            return None
+        extension = cls._field(payload, "number", "extension", "extensionNumber", "dn")
+        name = cls._field(payload, "name", "displayName", "display_name")
+        members_payload = cls._field(payload, *member_fields) or []
+        if not isinstance(members_payload, list):
+            members_payload = []
+        members: list[ThreeCXDirectoryMember] = []
+        for item in members_payload:
+            if isinstance(item, dict):
+                member_id = cls._field(item, "id", "user_id", "userId", "memberId")
+                member_extension = cls._field(item, "number", "extension", "extensionNumber", "dn")
+            else:
+                member_id, member_extension = item, None
+            if member_id is not None or member_extension is not None:
+                members.append(ThreeCXDirectoryMember(
+                    user_id=str(member_id) if member_id is not None else None,
+                    extension=str(member_extension) if member_extension not in (None, "") else None,
+                ))
+        return ThreeCXDirectoryGroup(
+            group_id=str(group_id), extension=str(extension) if extension not in (None, "") else None,
+            name=str(name or "Unnamed 3CX group"), members=tuple(members),
+        )
+
+    @staticmethod
+    def _resolve_member_extensions(
+        groups: list[ThreeCXDirectoryGroup], users: list[ThreeCXDirectoryUser],
+    ) -> list[ThreeCXDirectoryGroup]:
+        extensions = {user.user_id: user.extension for user in users}
+        return [
+            ThreeCXDirectoryGroup(
+                group_id=group.group_id, extension=group.extension, name=group.name,
+                members=tuple(ThreeCXDirectoryMember(
+                    user_id=member.user_id,
+                    extension=member.extension or extensions.get(member.user_id or ""),
+                ) for member in group.members),
+            )
+            for group in groups
+        ]
+
+    def list_xapi_users(self) -> list[ThreeCXDirectoryUser]:
+        """List all visible 3CX users; no 3CX state is changed."""
+        return [user for row in self._xapi_collection("/xapi/v1/Users") if (user := self._directory_user(row))]
+
+    def list_xapi_ring_groups(self) -> list[ThreeCXDirectoryGroup]:
+        """List visible ring groups and their member references."""
+        return [
+            group for row in self._xapi_collection("/xapi/v1/RingGroups")
+            if (group := self._directory_group(row, ("members", "users")))
+        ]
+
+    def list_xapi_queues(self) -> list[ThreeCXDirectoryGroup]:
+        """List visible queues and their agent/member references."""
+        return [
+            group for row in self._xapi_collection("/xapi/v1/Queues")
+            if (group := self._directory_group(row, ("agents", "members", "users")))
+        ]
+
+    def list_xapi_directory(self) -> tuple[
+        list[ThreeCXDirectoryUser], list[ThreeCXDirectoryGroup], list[ThreeCXDirectoryGroup],
+    ]:
+        """Return users, ring groups, and queues with member extensions resolved."""
+        users = self.list_xapi_users()
+        return (
+            users,
+            self._resolve_member_extensions(self.list_xapi_ring_groups(), users),
+            self._resolve_member_extensions(self.list_xapi_queues(), users),
+        )
+
+    def single_member_extension(self, destination: str) -> str | None:
+        """Resolve a one-person queue/ring group without broadcasting context.
+
+        Multi-member destinations deliberately return ``None`` until the call
+        event stream identifies which member actually answered.
+        """
+        _users, ring_groups, queues = self.list_xapi_directory()
+        group = next((item for item in (*ring_groups, *queues) if item.extension == destination), None)
+        if not group:
+            return destination if destination.isdigit() else None
+        extensions = {member.extension for member in group.members if member.extension}
+        return next(iter(extensions)) if len(extensions) == 1 else None
 
     @property
     def source_dn(self) -> str:
@@ -218,6 +470,27 @@ class ThreeCXClient:
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             raise self._failure("3CX could not play the prerecorded message.", exc) from exc
+
+    def monitor_dtmf(self, call: ThreeCXTestCall) -> ThreeCXDtmfMonitor:
+        return ThreeCXDtmfMonitor(self, call)
+
+    def route_to(self, call: ThreeCXTestCall, destination: str, alfred_call_id: int) -> None:
+        """Keep the Route Point connected until an allowlisted destination answers."""
+        try:
+            response = self.client.post(
+                f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/routeto",
+                headers=self._authorized_headers(),
+                json={"destination": destination},
+                # routeto completes only after 3CX delivers the call or its
+                # queue attempt fails. Do not cancel a valid PBX handoff at
+                # the client's shorter general API timeout.
+                timeout=max(90.0, self.settings.threecx_timeout_seconds),
+            )
+            response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise ThreeCXError("3CX did not finish the queue routing attempt within 90 seconds.") from exc
+        except httpx.HTTPError as exc:
+            raise self._failure("3CX could not route the answered call to the selected queue.", exc) from exc
 
     def drop_call(self, call: ThreeCXTestCall) -> None:
         try:

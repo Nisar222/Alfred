@@ -44,7 +44,7 @@ an on-premise AI voice agent that improves from outcome-labelled calls.
 Historical calls must keep their original snapshot. Updating a playbook creates
 a new version; it must not alter an old campaign silently.
 
-## Current working state (1 August 2026)
+## Current working state (3 August 2026)
 
 ### Proven
 
@@ -62,15 +62,40 @@ a new version; it must not alter an old campaign silently.
 - Campaign CSV upload, selected-playbook audio, campaign launch, automatic
   dispatch, 3CX call, and Call Log have been proven with an authorised test
   number.
+- DTMF capture over the 3CX Call Control WebSocket is proven. A caller pressing
+  the configured key can be transferred with `routeto`; a controlled call was
+  successfully routed to ring group `803`.
+- 3CX XAPI access is proven for visible users, ring groups, queues, and their
+  memberships. `803` is a **ring group**, not a queue, and currently has one
+  visible member at extension `101`.
+- Retry policy execution is implemented: bounded attempts, category controls,
+  delays moved into valid campaign hours, stale-call recovery, and immutable
+  attempt history.
+- Alfred now has individual accounts with Argon2 password hashes, opaque
+  database-backed sessions, CSRF protection, owner/supervisor/agent roles, and
+  role enforcement across operational API routes.
+- An owner can create Alfred agents and link them to 3CX identities. Agents may
+  sign in with their Alfred email or linked 3CX extension; Alfred never uses a
+  3CX user password.
+- Five visible 3CX users were imported as active Alfred agents with temporary
+  passwords. The owner account was preserved. The credential export is outside
+  Git in the protected owner directory and has `0600` permissions.
+- Successful routed campaign calls create durable agent notifications. The
+  browser polls for unread notifications and shows customer name, campaign,
+  and selected menu option only to the linked recipient.
+- Production is deployed and healthy at Alembic head `e71c4a8d930f`. Both
+  individual test calling and live campaign calling were verified off after
+  deployment.
 
 ### Current limitations / next work
 
-1. Dispatcher now skips active campaigns that are empty, outside hours, lack a
-   valid approved playbook/audio, or cannot use a slot. Continue improving the
-   visible reason a campaign is waiting.
-2. Implement a complete retry policy: distinguish no-answer/busy/provider
-   failure, limit attempts, schedule retries inside campaign hours, and retain
-   an immutable attempt history.
+1. For multi-member queues/ring groups, consume 3CX answer events and reassign
+   the durable notification to the extension that actually answered. Current
+   direct resolution is intentionally limited to a destination with exactly
+   one visible member, such as the current ring group `803` setup.
+2. Add a forced temporary-password change flow and owner controls for account
+   disable/reset. The current owner can set/reset access, but imported users do
+   not yet have a forced-change flag.
 3. Add campaign editing before launch: playbook version, calling window,
    capacity, and caller-ID override. Preserve historical call snapshots.
 4. Improve 3CX call-state reconciliation, duration accuracy, timeout handling,
@@ -89,6 +114,10 @@ a new version; it must not alter an old campaign silently.
 | Background campaign dispatcher | `backend/app/dispatcher.py` |
 | SQLAlchemy models | `backend/app/models.py` |
 | API schemas | `backend/app/schemas.py` |
+| Authentication / sessions | `backend/app/auth.py` |
+| First-owner provisioning | `backend/app/bootstrap_owner.py` |
+| 3CX user import | `backend/app/sync_threecx_users.py` |
+| Durable popup creation | `backend/app/notifications.py` |
 | Deterministic QA/simulator | `backend/app/services.py` |
 | Browser app | `backend/app/web/index.html`, `app.js`, CSS files |
 | Database migrations | `backend/alembic/versions/` |
@@ -110,6 +139,50 @@ a new version; it must not alter an old campaign silently.
 - Individual test calls and live campaign calls are enabled in Alfred Settings,
   not environment variables. Both default to off. Before turning on live calls,
   confirm every active campaign is an authorised test or approved campaign.
+- DTMF events are read from `/callcontrol/ws`. Alfred opens the monitor before
+  audio playback so early keypresses are not lost.
+- `routeto` can remain pending until the destination answers; the client uses a
+  longer bounded timeout for that operation.
+- The safe XAPI directory subset is ID, display name, extension, and email plus
+  queue/ring-group membership. Never expose the Service Principal credential or
+  arbitrary XAPI payloads to the browser.
+- A routed campaign call addressed to a destination with one visible member is
+  resolved to that member extension for the popup. A multi-member destination
+  must wait for answer-event correlation; do not broadcast the notification.
+
+## Accounts and authentication
+
+- Nginx Basic Auth may remain as an outer defence, but Alfred application
+  sessions are the user identity source.
+- Passwords are Argon2 hashes. Browser sessions are opaque random values whose
+  hashes are stored in `auth_sessions`; cookies are Secure, HttpOnly, and
+  SameSite Strict.
+- `GET /health`, login, and static assets remain public behind Nginx. All
+  operational data requires a session. Unsafe operations require a CSRF token.
+- Owners administer settings, 3CX diagnostics, and users. Owners/supervisors
+  manage campaigns, playbooks, and audio. Agents can review their permitted
+  operational data and receive only their scoped notifications.
+- Provision the very first owner interactively after migrations with:
+
+  ```bash
+  docker compose run --rm api python -m app.bootstrap_owner
+  ```
+
+- Bulk import is an explicit owner operation. It queries visible XAPI users,
+  uses each numeric extension as the Alfred login, hashes generated temporary
+  passwords, and writes the plaintext handoff once to an owner-only CSV outside
+  the repository. Re-running it rotates passwords for existing non-owner
+  imported agents, so take a backup and do not run it casually:
+
+  ```bash
+  docker compose run --rm --user 1000:1000 \
+    -v /home/nisar/private/alfred:/credentials \
+    api python -m app.sync_threecx_users
+  ```
+
+- Never commit, paste, or log the credential export. Delete it securely after
+  credentials have been distributed and changed according to the owner's
+  approved process.
 
 ## Deployment model
 
@@ -149,6 +222,9 @@ Before migrations, take a verified backup. If an old database was originally
 created by `Base.metadata.create_all` and has no Alembic history, inspect its
 schema and use an explicitly reviewed `alembic stamp` baseline **once** before
 upgrading. This was required on the current VPS at revision `6c39c4b7ea21`.
+The current production chain continues through retry `8f6b2c1d4e7a`, DTMF
+routing `c3a7e9d2f104`, 3CX user links `f18a4d9b72c3`, local sessions
+`ab52d8e19f60`, and durable notifications `e71c4a8d930f`.
 
 ### Live-test procedure
 
@@ -168,6 +244,13 @@ upgrading. This was required on the current VPS at revision `6c39c4b7ea21`.
 - `Call` records the dialled identity, provider participant ID, timestamps,
   duration, failure reason, outcome, optional transcript/recording, and a
   frozen `configuration_snapshot_json`.
+- Every retry is a new `Call` row. `previous_attempt_id`, `attempt_number`,
+  `scheduled_for`, and `failure_category` retain a bounded immutable chain.
+- `User` stores Alfred role/authentication state and unique optional 3CX user
+  ID/extension links. `AuthSession` stores token hashes, expiry, and revocation.
+- `AgentNotification` snapshots the routed call's customer name, campaign,
+  menu option, destination, recipient, delivery time, and read time. One call
+  creates at most one durable notification.
 - `AudioAsset` stores metadata only. Its binary lives in Docker volume
   `audio_uploads` at `/app/media/uploads`.
 - `Playbook` and `PlaybookVersion` are immutable in effect: make a new version

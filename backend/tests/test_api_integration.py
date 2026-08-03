@@ -13,7 +13,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base, get_db
+from app.auth import hash_password
 from app.main import app
+from app.models import User
 from app.threecx import ThreeCXTestCall
 
 
@@ -33,7 +35,16 @@ class ApiIntegrationTests(unittest.TestCase):
                 session.close()
 
         app.dependency_overrides[get_db] = override_get_db
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url="https://testserver")
+        with self.session_factory() as db:
+            db.add(User(email="owner@example.test", display_name="Owner", role="owner",
+                        password_hash=hash_password("correct horse battery staple")))
+            db.commit()
+        login = self.client.post("/auth/login", json={
+            "email": "owner@example.test", "password": "correct horse battery staple",
+        })
+        self.assertEqual(login.status_code, 200, login.text)
+        self.client.headers.update({"X-CSRF-Token": login.json()["csrf_token"]})
 
     def tearDown(self):
         app.dependency_overrides.clear()

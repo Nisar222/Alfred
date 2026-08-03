@@ -13,6 +13,7 @@ class CampaignCreate(BaseModel):
     calling_window_json: dict | None = None
     caller_id_override: str | None = Field(default=None, max_length=80)
     max_concurrent_calls_override: int | None = Field(default=None, ge=1, le=16)
+    dtmf_queue_extension_override: str | None = Field(default=None, pattern=r"^\d{2,10}$")
 
 
 class CampaignOut(BaseModel):
@@ -20,6 +21,7 @@ class CampaignOut(BaseModel):
     playbook_version_id: int | None = None; timezone: str
     calling_window_json: dict = Field(default_factory=dict)
     caller_id_override: str | None = None; max_concurrent_calls_override: int | None = None
+    dtmf_queue_extension_override: str | None = None
     model_config = {"from_attributes": True}
 
 
@@ -35,6 +37,98 @@ class TestCallRequest(BaseModel):
     def model_post_init(self, __context) -> None:
         if not re.fullmatch(r"\+[1-9]\d{7,14}", self.destination):
             raise ValueError("Use an international phone number, for example +16282187213")
+
+
+class DtmfDiagnosticOut(BaseModel):
+    status: str
+    digit: str | None = None
+    destination: str | None = None
+
+
+class AgentNotificationOut(BaseModel):
+    id: int
+    call_id: int
+    recipient_user_id: int | None
+    recipient_extension: str | None
+    customer_name: str | None
+    campaign_name: str
+    menu_option: str | None
+    routed_destination: str
+    created_at: datetime
+    delivered_at: datetime | None
+    read_at: datetime | None
+    model_config = {"from_attributes": True}
+
+
+class ThreeCXDirectoryUserOut(BaseModel):
+    user_id: str
+    name: str
+    extension: str | None = None
+    email: str | None = None
+
+
+class ThreeCXDirectoryMemberOut(BaseModel):
+    user_id: str | None = None
+    extension: str | None = None
+
+
+class ThreeCXDirectoryGroupOut(BaseModel):
+    group_id: str
+    extension: str | None = None
+    name: str
+    members: list[ThreeCXDirectoryMemberOut] = Field(default_factory=list)
+
+
+class ThreeCXDirectoryOut(BaseModel):
+    users: list[ThreeCXDirectoryUserOut] = Field(default_factory=list)
+    ring_groups: list[ThreeCXDirectoryGroupOut] = Field(default_factory=list)
+    queues: list[ThreeCXDirectoryGroupOut] = Field(default_factory=list)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class CurrentUserOut(BaseModel):
+    id: int
+    email: str
+    display_name: str
+    role: str
+    threecx_extension: str | None = None
+
+
+class LoginOut(BaseModel):
+    user: CurrentUserOut
+    csrf_token: str
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+class AdminUserOut(CurrentUserOut):
+    is_active: bool
+    threecx_user_id: str | None = None
+
+
+class AdminUserCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    display_name: str = Field(min_length=1, max_length=150)
+    role: str = Field(default="agent", pattern=r"^(owner|supervisor|agent)$")
+    threecx_user_id: str | None = Field(default=None, max_length=80)
+    threecx_extension: str | None = Field(default=None, pattern=r"^\d{2,10}$")
+
+
+class ThreeCXLinkUpdate(BaseModel):
+    threecx_user_id: str | None = Field(default=None, max_length=80)
+    threecx_extension: str | None = Field(default=None, pattern=r"^\d{2,10}$")
+
+
+class AdminUserAccessUpdate(BaseModel):
+    password: str = Field(min_length=12, max_length=256)
+    is_active: bool = True
 
 
 class OutcomeUpdate(BaseModel):
@@ -60,6 +154,9 @@ class CallOut(BaseModel):
     outcome: Outcome | None; transcript: str | None; duration_seconds: int | None; created_at: datetime
     sentiment: Sentiment = Sentiment.unknown; sentiment_confidence: int | None = None; sentiment_source: str = "not_available"
     provider_call_id: str | None = None; failure_reason: str | None = None
+    failure_category: str | None = None; previous_attempt_id: int | None = None
+    attempt_number: int = 1; scheduled_for: datetime | None = None
+    dtmf_digit: str | None = None; routed_destination: str | None = None; routing_status: str | None = None
     started_at: datetime | None = None; completed_at: datetime | None = None
     recording_available: bool = False
     configuration_snapshot_json: dict = Field(default_factory=dict)
@@ -72,6 +169,14 @@ class GlobalSettingsUpdate(BaseModel):
     default_calling_window_json: dict = Field(default_factory=dict)
     max_concurrent_calls: int = Field(default=1, ge=1, le=16)
     recording_retention_days: int = Field(default=30, ge=1, le=3650)
+    retry_max_attempts: int = Field(default=1, ge=1, le=5)
+    retry_delay_minutes: int = Field(default=60, ge=5, le=10080)
+    retry_no_answer: bool = True
+    retry_busy: bool = True
+    retry_provider_failure: bool = True
+    dtmf_routing_enabled: bool = False
+    dtmf_menu_digit: str = Field(default="1", pattern=r"^[0-9]$")
+    dtmf_queue_extension: str | None = Field(default=None, pattern=r"^\d{2,10}$")
     test_call_enabled: bool = False
     live_campaign_calling_enabled: bool = False
 
