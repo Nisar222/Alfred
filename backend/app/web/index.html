@@ -48,9 +48,15 @@
     </section>
 
     <section id="call-log-view" class="app-view" aria-labelledby="call-log-title">
-      <div class="page-heading"><div><p class="eyebrow">EVERY CALL, IN ONE PLACE</p><h1 id="call-log-title">Call log</h1><p>See what happened, listen when recordings are ready, and label the outcome.</p></div><button id="call-log-review" class="primary-button">Review calls <span>→</span></button></div>
+      <div class="page-heading"><div><p class="eyebrow">EVERY CALL, IN ONE PLACE</p><h1 id="call-log-title">Call log</h1><p id="call-log-subtitle">Select a call to listen, read the transcript, and review what happened.</p></div><button id="call-log-review" class="primary-button">Review calls <span>→</span></button></div>
       <div class="log-summary" id="log-summary"></div>
-      <div class="call-log-card panel"><div class="call-log-toolbar"><strong id="call-log-count">0 calls</strong><span>Newest first</span></div><div id="call-log-list" class="call-log-list"></div></div>
+      <div class="call-log-shell panel">
+        <aside class="call-log-sidebar" aria-label="Recent calls">
+          <div class="call-log-toolbar"><strong id="call-log-count">0 calls</strong><span>Newest first</span></div>
+          <div id="call-log-list" class="call-log-list"></div>
+        </aside>
+        <div id="call-log-detail" class="call-log-detail" aria-live="polite"></div>
+      </div>
     </section>
 
     <section id="settings-view" class="app-view" aria-labelledby="settings-title">

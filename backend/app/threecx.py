@@ -3,8 +3,9 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import subprocess
+import threading
 import time
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -116,6 +117,20 @@ class ThreeCXDtmfMonitor:
             raise ThreeCXError("3CX could not open the Route Point event channel.") from exc
         return self
 
+    def poll(self, timeout_seconds: float = 0.05) -> str | None:
+        """Return one DTMF digit if the Route Point event channel already has one."""
+        if self.connection is None:
+            raise ThreeCXError("The Route Point event channel is not connected.")
+        if timeout_seconds <= 0:
+            timeout_seconds = 0.001
+        try:
+            message = self.connection.recv(timeout=timeout_seconds)
+        except TimeoutError:
+            return None
+        except Exception as exc:
+            raise ThreeCXError("The Route Point event channel closed unexpectedly.") from exc
+        return parse_dtmf_event(str(message), self.client.source_dn, self.call.participant_id)
+
     def wait(self, timeout_seconds: int) -> str | None:
         if self.connection is None:
             raise ThreeCXError("The Route Point event channel is not connected.")
@@ -138,6 +153,8 @@ class ThreeCXDtmfMonitor:
 
 
 class ThreeCXClient:
+    _SILENCE_CHUNK = b"\x00" * 320
+
     def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None):
         if not settings.threecx_base_url or not settings.threecx_app_id or not settings.threecx_api_key:
             raise ThreeCXError("3CX is not configured. Add the base URL, app ID, and API key on the VPS.")
@@ -301,8 +318,8 @@ class ThreeCXClient:
         members: list[ThreeCXDirectoryMember] = []
         for item in members_payload:
             if isinstance(item, dict):
-                member_id = cls._field(item, "id", "user_id", "userId", "memberId")
-                member_extension = cls._field(item, "number", "extension", "extensionNumber", "dn")
+                member_id = cls._field(item, "id", "Id", "user_id", "userId", "memberId", "UserId")
+                member_extension = cls._field(item, "number", "Number", "extension", "extensionNumber", "dn", "Extension")
             else:
                 member_id, member_extension = item, None
             if member_id is not None or member_extension is not None:
@@ -314,6 +331,18 @@ class ThreeCXClient:
             group_id=str(group_id), extension=str(extension) if extension not in (None, "") else None,
             name=str(name or "Unnamed 3CX group"), members=tuple(members),
         )
+
+    def _members_from_xapi_rows(self, rows: list[dict[str, Any]]) -> tuple[ThreeCXDirectoryMember, ...]:
+        members: list[ThreeCXDirectoryMember] = []
+        for item in rows:
+            member_id = self._field(item, "id", "Id", "user_id", "userId", "memberId", "UserId")
+            member_extension = self._field(item, "number", "Number", "extension", "extensionNumber", "dn", "Extension")
+            if member_id is not None or member_extension is not None:
+                members.append(ThreeCXDirectoryMember(
+                    user_id=str(member_id) if member_id is not None else None,
+                    extension=str(member_extension) if member_extension not in (None, "") else None,
+                ))
+        return tuple(members)
 
     @staticmethod
     def _resolve_member_extensions(
@@ -337,10 +366,21 @@ class ThreeCXClient:
 
     def list_xapi_ring_groups(self) -> list[ThreeCXDirectoryGroup]:
         """List visible ring groups and their member references."""
-        return [
-            group for row in self._xapi_collection("/xapi/v1/RingGroups")
-            if (group := self._directory_group(row, ("members", "users")))
-        ]
+        groups: list[ThreeCXDirectoryGroup] = []
+        for row in self._xapi_collection("/xapi/v1/RingGroups"):
+            group = self._directory_group(row, ("Members", "members", "users"))
+            if not group:
+                continue
+            if not group.members:
+                member_rows = self._xapi_collection(f"/xapi/v1/RingGroups({group.group_id})/Members")
+                group = ThreeCXDirectoryGroup(
+                    group_id=group.group_id,
+                    extension=group.extension,
+                    name=group.name,
+                    members=self._members_from_xapi_rows(member_rows),
+                )
+            groups.append(group)
+        return groups
 
     def list_xapi_queues(self) -> list[ThreeCXDirectoryGroup]:
         """List visible queues and their agent/member references."""
@@ -437,6 +477,16 @@ class ThreeCXClient:
         )
 
     @staticmethod
+    def _stop_ffmpeg(process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+
+    @staticmethod
     def _pcm_chunks(audio_path: Path) -> Iterator[bytes]:
         """Convert a source MP3/WAV to the exact real-time audio 3CX expects."""
         command = [
@@ -471,6 +521,94 @@ class ThreeCXClient:
         except httpx.HTTPError as exc:
             raise self._failure("3CX could not play the prerecorded message.", exc) from exc
 
+    def play_prerecorded_message_with_dtmf(
+        self,
+        call: ThreeCXTestCall,
+        monitor: ThreeCXDtmfMonitor,
+        audio_path: Path,
+        timeout_seconds: int = 15,
+    ) -> tuple[str | None, Callable[[], None]]:
+        """Stream opening audio while listening for DTMF.
+
+        Returns the captured digit and a ``finish`` callback. Call ``finish``
+        only after ``route_to`` (or ``drop_call``) so 3CX keeps the caller
+        connected instead of treating an abrupt stream end as a hangup.
+        """
+        if not audio_path.is_file():
+            raise ThreeCXError("The prerecorded message is missing from the VPS media folder.")
+        command = [
+            "ffmpeg", "-nostdin", "-v", "error", "-re", "-i", str(audio_path),
+            "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1",
+        ]
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as exc:
+            raise ThreeCXError("Audio converter is unavailable in the API container.") from exc
+
+        captured_digit: list[str | None] = [None]
+        hold_stream = threading.Event()
+        end_stream = threading.Event()
+        stream_error: list[Exception] = []
+        deadline = time.monotonic() + timeout_seconds
+
+        def listen_for_dtmf() -> None:
+            while not end_stream.is_set() and time.monotonic() < deadline:
+                digit = monitor.poll(timeout_seconds=0.1)
+                if digit is not None:
+                    captured_digit[0] = digit
+                    hold_stream.set()
+                    self._stop_ffmpeg(process)
+                    return
+
+        listener = threading.Thread(target=listen_for_dtmf, name="dtmf-listener", daemon=True)
+        listener.start()
+
+        def chunk_generator() -> Iterator[bytes]:
+            assert process.stdout is not None
+            try:
+                while not end_stream.is_set():
+                    if hold_stream.is_set():
+                        yield self._SILENCE_CHUNK
+                        time.sleep(0.02)
+                        continue
+                    if time.monotonic() >= deadline:
+                        break
+                    chunk = process.stdout.read(320)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                end_stream.set()
+                listener.join(timeout=1)
+                self._stop_ffmpeg(process)
+
+        def run_stream() -> None:
+            try:
+                with self.client.stream(
+                    "POST",
+                    f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/stream",
+                    headers={**self._authorized_headers(), "Content-Type": "application/octet-stream"},
+                    content=chunk_generator(),
+                ) as response:
+                    response.raise_for_status()
+            except Exception as exc:
+                stream_error.append(exc)
+
+        stream_thread = threading.Thread(target=run_stream, name="audio-stream", daemon=True)
+        stream_thread.start()
+
+        while stream_thread.is_alive() and time.monotonic() < deadline and captured_digit[0] is None:
+            time.sleep(0.05)
+
+        def finish() -> None:
+            end_stream.set()
+            stream_thread.join(timeout=10)
+            listener.join(timeout=1)
+            if stream_error:
+                raise stream_error[0]
+
+        return captured_digit[0], finish
+
     def monitor_dtmf(self, call: ThreeCXTestCall) -> ThreeCXDtmfMonitor:
         return ThreeCXDtmfMonitor(self, call)
 
@@ -502,3 +640,21 @@ class ThreeCXClient:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise self._failure("The message finished, but 3CX could not end the test call.", exc) from exc
+
+    def list_xapi_recordings(self) -> list[dict[str, Any]]:
+        """List call recordings visible to the configured 3CX application."""
+        return self._xapi_collection("/xapi/v1/Recordings")
+
+    def stream_recording(self, recording_id: int):
+        """Stream one recording from 3CX without persisting it on Alfred."""
+        path = f"/xapi/v1/Recordings/Pbx.DownloadRecording(recId={recording_id})"
+        try:
+            return self.client.stream(
+                "GET",
+                path,
+                headers=self._authorized_headers(),
+                follow_redirects=True,
+                timeout=max(120.0, self.settings.threecx_timeout_seconds),
+            )
+        except httpx.HTTPError as exc:
+            raise self._failure("3CX could not stream the call recording.", exc) from exc

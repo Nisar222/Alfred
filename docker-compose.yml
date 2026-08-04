@@ -50,6 +50,10 @@ services:
       PRERECORDED_MESSAGE_PATH: ${PRERECORDED_MESSAGE_PATH:-/app/media/test-message.mp3}
       AUDIO_STORAGE_DIR: ${AUDIO_STORAGE_DIR:-/app/media/uploads}
       MAX_AUDIO_UPLOAD_BYTES: ${MAX_AUDIO_UPLOAD_BYTES:-26214400}
+      TRANSCRIPT_SYNC_ENABLED: ${TRANSCRIPT_SYNC_ENABLED:-true}
+      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-base}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
     volumes:
       # The operator's one controlled test message is mounted as a single
       # read-only file. Browser uploads live in a separate local Docker
@@ -58,6 +62,7 @@ services:
       # child volume beneath a read-only bind mount.
       - ./media/test-message.mp3:/app/media/test-message.mp3:ro
       - audio_uploads:/app/media/uploads
+      - whisper_cache:/app/.cache
     ports:
       # Bind only to loopback; put a TLS reverse proxy in front of this service.
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
@@ -79,3 +84,4 @@ volumes:
   postgres_data:
   redis_data:
   audio_uploads:
+  whisper_cache:

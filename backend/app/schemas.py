@@ -159,6 +159,8 @@ class CallOut(BaseModel):
     dtmf_digit: str | None = None; routed_destination: str | None = None; routing_status: str | None = None
     started_at: datetime | None = None; completed_at: datetime | None = None
     recording_available: bool = False
+    call_summary: str | None = None
+    transcript_segments: list[dict] = Field(default_factory=list)
     configuration_snapshot_json: dict = Field(default_factory=dict)
     metric: MetricOut | None = None
     model_config = {"from_attributes": True}

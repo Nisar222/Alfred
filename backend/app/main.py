@@ -8,11 +8,12 @@ from io import StringIO
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 from .config import get_settings
-from .database import Base, engine, get_db
+from .database import Base, SessionLocal, engine, get_db
 from .models import (AgentNotification, AudioAsset, AudioAssetStatus, AuthSession, Call, CallStatus, Campaign, CampaignStatus,
                      GlobalSettings, Playbook, PlaybookStatus, PlaybookVersion, User)
 from .schemas import (AudioAssetOut, CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult, DtmfDiagnosticOut,
@@ -24,16 +25,30 @@ from .auth import SESSION_COOKIE, create_session, current_session, current_user,
 from .services import analyze_sentiment, daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
 from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
+from .notifications import ensure_diagnostic_routing_notification
+from .recording_sync import RecordingSync
+from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
+from .transcript_sync import TranscriptSync
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     dispatcher = CampaignDispatcher()
+    recording_sync = RecordingSync()
+    transcript_sync = TranscriptSync()
     dispatcher.start()
+    recording_sync.start()
+    transcript_sync.start()
+    settings = get_settings()
+    if settings.call_provider == "threecx":
+        with SessionLocal() as db:
+            sync_threecx_recordings_safe(db, settings)
     try:
         yield
     finally:
+        transcript_sync.stop()
+        recording_sync.stop()
         dispatcher.stop()
 
 
@@ -345,22 +360,35 @@ def test_threecx_dtmf(db: Session = Depends(get_db)):
         provider_call = client.start_test_call(settings.threecx_test_destination)
         client.wait_until_connected(provider_call)
         with client.monitor_dtmf(provider_call) as monitor:
-            client.play_prerecorded_message(provider_call, Path(settings.prerecorded_message_path))
-            digit = monitor.wait(timeout_seconds=15)
-        routing = _global_settings(db)
-        if (routing.dtmf_routing_enabled and routing.dtmf_queue_extension
-                and digit == routing.dtmf_menu_digit):
-            client.route_to(provider_call, routing.dtmf_queue_extension, 0)
-            dropped = True
-            return {"status": "routed", "digit": digit, "destination": routing.dtmf_queue_extension}
-        try:
-            client.drop_call(provider_call)
-        except ThreeCXError:
-            # The remote party may already have ended the call. Cleanup must
-            # not hide a DTMF result that Alfred successfully received.
-            pass
-        finally:
-            dropped = True
+            digit, finish_playback = client.play_prerecorded_message_with_dtmf(
+                provider_call, monitor, Path(settings.prerecorded_message_path), timeout_seconds=15,
+            )
+            try:
+                routing = _global_settings(db)
+                if (routing.dtmf_routing_enabled and routing.dtmf_queue_extension
+                        and digit == routing.dtmf_menu_digit):
+                    try:
+                        recipient_extension = client.single_member_extension(routing.dtmf_queue_extension)
+                    except ThreeCXError:
+                        recipient_extension = None
+                    ensure_diagnostic_routing_notification(
+                        db,
+                        destination=routing.dtmf_queue_extension,
+                        digit=digit,
+                        recipient_extension=recipient_extension,
+                    )
+                    db.commit()
+                    client.route_to(provider_call, routing.dtmf_queue_extension, 0)
+                    dropped = True
+                    return {"status": "routed", "digit": digit, "destination": routing.dtmf_queue_extension}
+                try:
+                    client.drop_call(provider_call)
+                except ThreeCXError:
+                    pass
+                finally:
+                    dropped = True
+            finally:
+                finish_playback()
     except ThreeCXError as exc:
         raise HTTPException(502, str(exc)) from exc
     finally:
@@ -720,6 +748,35 @@ def label_sentiment(call_id: int, payload: SentimentUpdate, db: Session = Depend
     call.sentiment_source = "reviewer"
     db.commit(); db.refresh(call)
     return call
+
+
+@app.get("/calls/{call_id}/recording", dependencies=[Depends(current_user)])
+def stream_call_recording(call_id: int, db: Session = Depends(get_db)):
+    """Stream a linked 3CX recording through Alfred without storing audio locally."""
+    call = db.scalar(select(Call).options(selectinload(Call.recording)).where(Call.id == call_id))
+    if not call or not call.recording or call.recording.deleted_at:
+        raise HTTPException(404, "Recording not available for this call")
+    recording_id = parse_threecx_recording_id(call.recording.storage_key)
+    if recording_id is None:
+        raise HTTPException(404, "Recording not available for this call")
+
+    settings = get_settings()
+    client = ThreeCXClient(settings)
+
+    def iter_audio():
+        try:
+            with client.stream_recording(recording_id) as response:
+                response.raise_for_status()
+                for chunk in response.iter_bytes():
+                    yield chunk
+        finally:
+            client.close()
+
+    return StreamingResponse(
+        iter_audio(),
+        media_type=call.recording.content_type or "audio/x-wav",
+        headers={"Content-Disposition": f'inline; filename="call-{call_id}.wav"'},
+    )
 
 
 @app.get("/metrics/daily", dependencies=[Depends(current_user)])

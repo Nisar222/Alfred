@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     max_audio_upload_bytes: int = 25 * 1024 * 1024
     threecx_test_call_timeout_seconds: int = 45
     session_ttl_hours: int = 12
+    transcript_sync_enabled: bool = True
+    whisper_model_size: str = "base"
+    whisper_device: str = "cpu"
+    whisper_compute_type: str = "int8"
+    whisper_beam_size: int = 3
 
 
 @lru_cache

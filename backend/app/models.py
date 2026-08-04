@@ -248,6 +248,14 @@ class Call(TimestampMixin, Base):
     def recording_available(self) -> bool:
         return bool(self.recording and self.recording.deleted_at is None)
 
+    @property
+    def call_summary(self) -> str | None:
+        return self._transcript.summary if self._transcript else None
+
+    @property
+    def transcript_segments(self) -> list:
+        return list(self._transcript.segments_json) if self._transcript and self._transcript.segments_json else []
+
 
 class GlobalSettings(TimestampMixin, Base):
     """Single tenant settings. Row id=1 is deliberately the only permitted row."""
@@ -311,6 +319,7 @@ class Transcript(TimestampMixin, Base):
     call_id: Mapped[int] = mapped_column(ForeignKey("calls.id", ondelete="CASCADE"), primary_key=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str | None] = mapped_column(String(16))
+    summary: Mapped[str | None] = mapped_column(Text)
     source: Mapped[TranscriptSource] = mapped_column(Enum(TranscriptSource, name="transcript_source"), default=TranscriptSource.whisper, nullable=False)
     confidence: Mapped[int | None] = mapped_column(Integer)
     segments_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
