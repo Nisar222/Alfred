@@ -182,6 +182,31 @@ class ContactUploadResult(BaseModel):
     queued: int
 
 
+class LiveCallOut(BaseModel):
+    id: int
+    prospect_name: str | None
+    phone: str
+    started_at: datetime | None
+    elapsed_seconds: int = 0
+
+
+class CampaignLiveStatusOut(BaseModel):
+    id: int
+    name: str
+    lines_in_use: int
+    lines_available: int
+    queued: int
+    completed_today: int
+    failed_today: int
+    live_calls: list[LiveCallOut] = Field(default_factory=list)
+
+
+class LiveStatusOut(BaseModel):
+    max_concurrent_calls: int
+    lines_in_use: int
+    active_campaigns: list[CampaignLiveStatusOut] = Field(default_factory=list)
+
+
 class MetricOut(BaseModel):
     tone: int; clarity: int; engagement: int; objection: int; close: int
     strength: str; weakness: str; suggestion: str

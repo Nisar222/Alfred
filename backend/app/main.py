@@ -26,7 +26,7 @@ from .models import (AgentNotification, AudioAsset, AudioAssetStatus, AuthSessio
                      GlobalSettings, Playbook, PlaybookStatus, PlaybookVersion, User)
 from .schemas import (AudioAssetOut, CallListItemOut, CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult, DtmfDiagnosticOut,
                       ForwardChainDiagnosticOut, HoldThenStreamDiagnosticOut,
-                      GlobalSettingsOut, GlobalSettingsUpdate, OutcomeUpdate, PlaybookCreate,
+                      GlobalSettingsOut, GlobalSettingsUpdate, LiveStatusOut, OutcomeUpdate, PlaybookCreate,
                       PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, SentimentUpdate, TestCallRequest,
                       ThreeCXDirectoryOut, CurrentUserOut, LoginOut, LoginRequest, PasswordChangeRequest, AdminUserCreate, AdminUserOut,
                       ThreeCXLinkUpdate, AdminUserAccessUpdate, AgentNotificationOut)
@@ -37,7 +37,7 @@ from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
 from .notifications import ensure_diagnostic_routing_notification
 from .recording_sync import RecordingSync
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
-from .transcript_sync import TranscriptSync
+from .live_status import live_campaign_status
 
 
 @asynccontextmanager
@@ -867,6 +867,11 @@ def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
 @app.get("/campaigns", response_model=list[CampaignOut], dependencies=[Depends(current_user)])
 def list_campaigns(db: Session = Depends(get_db)):
     return db.scalars(select(Campaign).order_by(Campaign.created_at.desc())).all()
+
+
+@app.get("/campaigns/live-status", response_model=LiveStatusOut, dependencies=[Depends(current_user)])
+def get_live_campaign_status(db: Session = Depends(get_db)):
+    return live_campaign_status(db)
 
 
 @app.post("/campaigns/{campaign_id}/launch", response_model=CampaignOut,

@@ -12,6 +12,13 @@
   <nav class="app-nav" aria-label="Main navigation">
     <div><button class="nav-link active" data-view="today">Today</button><button class="nav-link" data-view="call-log">Call log</button><button class="nav-link" data-view="settings">Settings</button></div>
   </nav>
+  <div id="live-status-bar" class="live-status-bar" hidden aria-live="polite">
+    <button type="button" class="live-status-main" id="live-status-open">
+      <span class="live-status-dot" id="live-status-dot" aria-hidden="true"></span>
+      <span class="live-status-copy"><strong id="live-status-title">Calling</strong><span id="live-status-detail">Campaign status</span></span>
+    </button>
+    <button type="button" class="quiet-button small" id="live-status-pause">Pause</button>
+  </div>
   <main id="today" class="app-main">
     <section id="today-view" class="app-view active-view">
     <section class="welcome">
