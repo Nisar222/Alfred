@@ -60,7 +60,10 @@ def live_campaign_status(db: Session) -> dict:
         for call in live_calls_raw:
             elapsed = 0
             if call.started_at:
-                elapsed = max(0, int((now - call.started_at).total_seconds()))
+                started = call.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                elapsed = max(0, int((now - started).total_seconds()))
             live_calls.append(
                 {
                     "id": call.id,
