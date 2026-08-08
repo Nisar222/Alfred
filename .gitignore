@@ -1,6 +1,8 @@
 .env
+alfred_local.db
 media/*.mp3
 media/*.wav
+media/uploads/
 !media/.gitkeep
 .venv/
 __pycache__/

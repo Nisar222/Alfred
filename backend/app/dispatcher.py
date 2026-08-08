@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
 from .database import SessionLocal
+from .dtmf_routing import resolve_dtmf_destination
 from .models import AudioAssetStatus, Call, CallStatus, Campaign, CampaignStatus, GlobalSettings, PlaybookStatus
 from .threecx import ThreeCXClient, ThreeCXError
 from .notifications import ensure_routing_notification
@@ -26,7 +27,8 @@ class DispatchError(RuntimeError):
 def _within_calling_window(campaign: Campaign, now: datetime | None = None) -> bool:
     window = campaign.calling_window_json or {}
     start, end = window.get("start"), window.get("end")
-    if not start or not end:
+    if not start or not end or start == end:
+        # Empty or identical bounds mean "any time" — 00:00–00:00 must not block all calls.
         return True
     try:
         local_now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(campaign.timezone)).strftime("%H:%M")
@@ -189,15 +191,23 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
         snapshot = call.configuration_snapshot_json or {}
         global_policy = snapshot.get("global", {})
         campaign_policy = snapshot.get("campaign", {})
+        routes = global_policy.get("dtmf_routes_json") or {}
+        if not routes:
+            legacy_digit = global_policy.get("dtmf_menu_digit", "1")
+            legacy_ext = global_policy.get("dtmf_queue_extension")
+            if legacy_ext:
+                routes = {legacy_digit: legacy_ext}
         routing_enabled = bool(global_policy.get("dtmf_routing_enabled"))
-        destination = campaign_policy.get("dtmf_queue_extension")
-        if routing_enabled and destination:
+        campaign_override = campaign_policy.get("dtmf_queue_extension_override")
+        if routing_enabled and routes:
             with client.monitor_dtmf(provider_call) as monitor:
                 call.dtmf_digit, finish_playback = client.play_prerecorded_message_with_dtmf(
                     provider_call, monitor, audio_path, timeout_seconds=15,
                 )
                 try:
-                    if call.dtmf_digit == global_policy.get("dtmf_menu_digit", "1"):
+                    route_destination = resolve_dtmf_destination(call.dtmf_digit, routes)
+                    if route_destination:
+                        destination = campaign_override or route_destination
                         call.routed_destination = str(destination)
                         try:
                             recipient_extension = client.single_member_extension(str(destination))

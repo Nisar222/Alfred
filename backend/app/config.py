@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     audio_storage_dir: str = "/app/media/uploads"
     max_audio_upload_bytes: int = 25 * 1024 * 1024
     threecx_test_call_timeout_seconds: int = 45
+    threecx_test_forward_destination: str = ""
+    threecx_test_first_destination: str = ""
+    threecx_test_forward_wait_seconds: int = 25
+    threecx_test_hold_wait_seconds: int = 45
+    transfer_message_path: str = ""
     session_ttl_hours: int = 12
     transcript_sync_enabled: bool = True
     whisper_model_size: str = "base"

@@ -106,7 +106,9 @@ class ApiIntegrationTests(unittest.TestCase):
         listed = self.client.get(f"/calls?campaign_id={campaign_id}")
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(len(listed.json()), 2)
-        self.assertTrue(all(call["metric"] for call in listed.json()))
+        detail = self.client.get(f"/calls/{listed.json()[0]['id']}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIsNotNone(detail.json()["metric"])
 
         metrics = self.client.get("/metrics/daily")
         self.assertEqual(metrics.status_code, 200)

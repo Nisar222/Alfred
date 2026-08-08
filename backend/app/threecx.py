@@ -174,7 +174,15 @@ class ThreeCXClient:
     def _failure(message: str, exc: httpx.HTTPError) -> ThreeCXError:
         """Expose only the upstream HTTP diagnostic; never credentials or tokens."""
         if isinstance(exc, httpx.HTTPStatusError):
-            body = exc.response.text.replace("\n", " ").strip()[:300]
+            body = ""
+            try:
+                body = exc.response.text.replace("\n", " ").strip()[:300]
+            except httpx.ResponseNotRead:
+                try:
+                    exc.response.read()
+                    body = exc.response.text.replace("\n", " ").strip()[:300]
+                except Exception:
+                    body = ""
             suffix = f" (3CX HTTP {exc.response.status_code}" + (f": {body}" if body else "") + ")"
             return ThreeCXError(message + suffix)
         return ThreeCXError(message)
@@ -476,6 +484,40 @@ class ThreeCXClient:
             f"({last_status}; initial 3CX result: {call.initial_status} — {call.initial_reason})."
         )
 
+    def get_participant(self, call: ThreeCXTestCall) -> dict[str, Any] | None:
+        """Return the current Route Point participant snapshot, if present."""
+        try:
+            response = self.client.get(
+                f"/callcontrol/{self.source_dn}",
+                headers=self._authorized_headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise self._failure("3CX could not read the Route Point call state.", exc) from exc
+        return next(
+            (
+                item
+                for item in (response.json().get("participants") or [])
+                if item.get("id") == call.participant_id
+            ),
+            None,
+        )
+
+    def wait_for_hold(self, call: ThreeCXTestCall, timeout_seconds: int) -> tuple[dict[str, Any] | None, bool, str]:
+        """Poll until the participant status looks like hold, or the timeout expires."""
+        deadline = time.monotonic() + timeout_seconds
+        last_status = "unknown"
+        while time.monotonic() < deadline:
+            participant = self.get_participant(call)
+            if participant is None:
+                time.sleep(0.5)
+                continue
+            last_status = str(participant.get("status", "unknown"))
+            if "hold" in last_status.lower():
+                return participant, True, last_status
+            time.sleep(0.5)
+        return self.get_participant(call), False, last_status
+
     @staticmethod
     def _stop_ffmpeg(process: subprocess.Popen[bytes]) -> None:
         if process.poll() is None:
@@ -549,10 +591,14 @@ class ThreeCXClient:
         hold_stream = threading.Event()
         end_stream = threading.Event()
         stream_error: list[Exception] = []
-        deadline = time.monotonic() + timeout_seconds
+        message_finished_at: list[float | None] = [None]
+        post_message_deadline = lambda: (message_finished_at[0] or time.monotonic()) + timeout_seconds
+        hard_stop = time.monotonic() + max(timeout_seconds + 120, 180)
 
         def listen_for_dtmf() -> None:
-            while not end_stream.is_set() and time.monotonic() < deadline:
+            while not end_stream.is_set() and time.monotonic() < hard_stop:
+                if message_finished_at[0] is not None and time.monotonic() >= post_message_deadline():
+                    return
                 digit = monitor.poll(timeout_seconds=0.1)
                 if digit is not None:
                     captured_digit[0] = digit
@@ -566,16 +612,20 @@ class ThreeCXClient:
         def chunk_generator() -> Iterator[bytes]:
             assert process.stdout is not None
             try:
-                while not end_stream.is_set():
+                while not end_stream.is_set() and time.monotonic() < hard_stop:
                     if hold_stream.is_set():
                         yield self._SILENCE_CHUNK
                         time.sleep(0.02)
                         continue
-                    if time.monotonic() >= deadline:
-                        break
                     chunk = process.stdout.read(320)
                     if not chunk:
-                        break
+                        if message_finished_at[0] is None:
+                            message_finished_at[0] = time.monotonic()
+                        if time.monotonic() >= post_message_deadline():
+                            break
+                        yield self._SILENCE_CHUNK
+                        time.sleep(0.02)
+                        continue
                     yield chunk
             finally:
                 end_stream.set()
@@ -597,7 +647,11 @@ class ThreeCXClient:
         stream_thread = threading.Thread(target=run_stream, name="audio-stream", daemon=True)
         stream_thread.start()
 
-        while stream_thread.is_alive() and time.monotonic() < deadline and captured_digit[0] is None:
+        while stream_thread.is_alive() and captured_digit[0] is None:
+            if message_finished_at[0] is not None and time.monotonic() >= post_message_deadline():
+                break
+            if time.monotonic() >= hard_stop:
+                break
             time.sleep(0.05)
 
         def finish() -> None:
@@ -614,21 +668,41 @@ class ThreeCXClient:
 
     def route_to(self, call: ThreeCXTestCall, destination: str, alfred_call_id: int) -> None:
         """Keep the Route Point connected until an allowlisted destination answers."""
+        self._participant_action(
+            call,
+            "routeto",
+            destination,
+            "3CX could not route the answered call to the selected queue.",
+        )
+
+    def transfer_to(self, call: ThreeCXTestCall, destination: str, alfred_call_id: int) -> None:
+        """Replace the connected agent leg and deliver the caller to a new destination."""
+        self._participant_action(
+            call,
+            "transferto",
+            destination,
+            "3CX could not transfer the answered call to the selected destination.",
+        )
+
+    def _participant_action(
+        self,
+        call: ThreeCXTestCall,
+        action: str,
+        destination: str,
+        failure_message: str,
+    ) -> None:
         try:
             response = self.client.post(
-                f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/routeto",
+                f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/{action}",
                 headers=self._authorized_headers(),
-                json={"destination": destination},
-                # routeto completes only after 3CX delivers the call or its
-                # queue attempt fails. Do not cancel a valid PBX handoff at
-                # the client's shorter general API timeout.
+                json={"destination": destination, "reason": "None", "timeout": 90},
                 timeout=max(90.0, self.settings.threecx_timeout_seconds),
             )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
-            raise ThreeCXError("3CX did not finish the queue routing attempt within 90 seconds.") from exc
+            raise ThreeCXError(f"3CX did not finish the {action} attempt within 90 seconds.") from exc
         except httpx.HTTPError as exc:
-            raise self._failure("3CX could not route the answered call to the selected queue.", exc) from exc
+            raise self._failure(failure_message, exc) from exc
 
     def drop_call(self, call: ThreeCXTestCall) -> None:
         try:

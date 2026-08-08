@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -14,9 +15,17 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 from .config import get_settings
 from .database import Base, SessionLocal, engine, get_db
+from .dtmf_routing import (
+    effective_dtmf_routes,
+    first_dtmf_route_destination,
+    normalize_dtmf_routes,
+    resolve_dtmf_destination,
+    sync_legacy_dtmf_fields,
+)
 from .models import (AgentNotification, AudioAsset, AudioAssetStatus, AuthSession, Call, CallStatus, Campaign, CampaignStatus,
                      GlobalSettings, Playbook, PlaybookStatus, PlaybookVersion, User)
-from .schemas import (AudioAssetOut, CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult, DtmfDiagnosticOut,
+from .schemas import (AudioAssetOut, CallListItemOut, CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult, DtmfDiagnosticOut,
+                      ForwardChainDiagnosticOut, HoldThenStreamDiagnosticOut,
                       GlobalSettingsOut, GlobalSettingsUpdate, OutcomeUpdate, PlaybookCreate,
                       PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, SentimentUpdate, TestCallRequest,
                       ThreeCXDirectoryOut, CurrentUserOut, LoginOut, LoginRequest, PasswordChangeRequest, AdminUserCreate, AdminUserOut,
@@ -67,6 +76,7 @@ def _global_settings(db: Session) -> GlobalSettings:
 def _call_snapshot(campaign: Campaign, db: Session) -> dict:
     global_settings = _global_settings(db)
     playbook = campaign.playbook_version
+    dtmf_routes = effective_dtmf_routes(global_settings)
     return {
         "global": {"timezone": global_settings.default_timezone, "max_concurrent_calls": global_settings.max_concurrent_calls,
                "recording_retention_days": global_settings.recording_retention_days,
@@ -77,10 +87,12 @@ def _call_snapshot(campaign: Campaign, db: Session) -> dict:
                "retry_provider_failure": global_settings.retry_provider_failure,
                "dtmf_routing_enabled": global_settings.dtmf_routing_enabled,
                "dtmf_menu_digit": global_settings.dtmf_menu_digit,
-               "dtmf_queue_extension": global_settings.dtmf_queue_extension},
+               "dtmf_queue_extension": global_settings.dtmf_queue_extension,
+               "dtmf_routes_json": dtmf_routes},
         "campaign": {"timezone": campaign.timezone, "calling_window": campaign.calling_window_json,
                      "caller_id": campaign.caller_id_override,
                      "max_concurrent_calls": campaign.max_concurrent_calls_override,
+                     "dtmf_queue_extension_override": campaign.dtmf_queue_extension_override,
                      "dtmf_queue_extension": campaign.dtmf_queue_extension_override or global_settings.dtmf_queue_extension},
         "playbook": None if playbook is None else {"id": playbook.playbook_id, "name": playbook.playbook.name, "version_id": playbook.id,
                      "version": playbook.version, "script": playbook.script, "opening_audio_id": playbook.opening_audio_id,
@@ -340,55 +352,79 @@ def get_threecx_directory():
     }
 
 
-@app.post("/integrations/3cx/test-dtmf", response_model=DtmfDiagnosticOut,
-          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
-def test_threecx_dtmf(db: Session = Depends(get_db)):
-    """Place one approved diagnostic call and capture one Route Point DTMF digit."""
+def _settings_out(settings: GlobalSettings) -> GlobalSettingsOut:
+    return GlobalSettingsOut.model_validate(settings).model_copy(
+        update={"dtmf_routes_json": effective_dtmf_routes(settings)},
+    )
+
+
+def _run_dtmf_diagnostic(
+    client: ThreeCXClient,
+    provider_call,
+    db: Session,
+    message_path: Path,
+) -> tuple[dict, bool]:
+    """Listen for DTMF during playback and route to the configured queue when matched."""
+    digit = None
+    dropped = False
+    routing = _global_settings(db)
+    routes = effective_dtmf_routes(routing)
+    with client.monitor_dtmf(provider_call) as monitor:
+        digit, finish_playback = client.play_prerecorded_message_with_dtmf(
+            provider_call, monitor, message_path, timeout_seconds=15,
+        )
+        try:
+            destination = resolve_dtmf_destination(digit, routes)
+            if routing.dtmf_routing_enabled and destination:
+                try:
+                    recipient_extension = client.single_member_extension(destination)
+                except ThreeCXError:
+                    recipient_extension = None
+                ensure_diagnostic_routing_notification(
+                    db,
+                    destination=destination,
+                    digit=digit,
+                    recipient_extension=recipient_extension,
+                )
+                db.commit()
+                client.route_to(provider_call, destination, 0)
+                dropped = True
+                return (
+                    {"status": "routed", "digit": digit, "destination": destination},
+                    dropped,
+                )
+            try:
+                client.drop_call(provider_call)
+            except ThreeCXError:
+                pass
+            finally:
+                dropped = True
+        finally:
+            finish_playback()
+    return (
+        {"status": "received" if digit else "no_input", "digit": digit, "destination": None},
+        dropped,
+    )
+
+
+def _place_dtmf_test_call(destination: str, db: Session) -> dict:
+    """Dial one test destination, play the message with DTMF capture, and route when configured."""
     settings = get_settings()
     if settings.call_provider != "threecx":
         raise HTTPException(409, "3CX is disabled. Enable it only for the controlled test.")
     if not _global_settings(db).test_call_enabled:
         raise HTTPException(409, "Test calling is locked. Enable it in Alfred Settings when ready.")
-    if not settings.threecx_test_destination:
-        raise HTTPException(409, "Set the single approved test destination on the VPS before calling.")
     client = None
     provider_call = None
-    digit = None
     dropped = False
     try:
         client = ThreeCXClient(settings)
-        provider_call = client.start_test_call(settings.threecx_test_destination)
+        provider_call = client.start_test_call(destination)
         client.wait_until_connected(provider_call)
-        with client.monitor_dtmf(provider_call) as monitor:
-            digit, finish_playback = client.play_prerecorded_message_with_dtmf(
-                provider_call, monitor, Path(settings.prerecorded_message_path), timeout_seconds=15,
-            )
-            try:
-                routing = _global_settings(db)
-                if (routing.dtmf_routing_enabled and routing.dtmf_queue_extension
-                        and digit == routing.dtmf_menu_digit):
-                    try:
-                        recipient_extension = client.single_member_extension(routing.dtmf_queue_extension)
-                    except ThreeCXError:
-                        recipient_extension = None
-                    ensure_diagnostic_routing_notification(
-                        db,
-                        destination=routing.dtmf_queue_extension,
-                        digit=digit,
-                        recipient_extension=recipient_extension,
-                    )
-                    db.commit()
-                    client.route_to(provider_call, routing.dtmf_queue_extension, 0)
-                    dropped = True
-                    return {"status": "routed", "digit": digit, "destination": routing.dtmf_queue_extension}
-                try:
-                    client.drop_call(provider_call)
-                except ThreeCXError:
-                    pass
-                finally:
-                    dropped = True
-            finally:
-                finish_playback()
+        result, dropped = _run_dtmf_diagnostic(
+            client, provider_call, db, Path(settings.prerecorded_message_path),
+        )
+        return result
     except ThreeCXError as exc:
         raise HTTPException(502, str(exc)) from exc
     finally:
@@ -399,7 +435,238 @@ def test_threecx_dtmf(db: Session = Depends(get_db)):
                 except ThreeCXError:
                     pass
             client.close()
-    return {"status": "received" if digit else "no_input", "digit": digit, "destination": None}
+
+
+@app.post("/integrations/3cx/test-dtmf", response_model=DtmfDiagnosticOut,
+          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
+def test_threecx_dtmf(db: Session = Depends(get_db)):
+    """Place one approved diagnostic call and capture one Route Point DTMF digit."""
+    settings = get_settings()
+    if not settings.threecx_test_destination:
+        raise HTTPException(409, "Set the single approved test destination on the VPS before calling.")
+    return _place_dtmf_test_call(settings.threecx_test_destination, db)
+
+
+@app.post("/integrations/3cx/test-forward-chain", response_model=ForwardChainDiagnosticOut,
+          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
+def test_forward_chain(db: Session = Depends(get_db)):
+    """Telephony POC: DTMF route to the first agent, pause, play a transfer message, route again."""
+    settings = get_settings()
+    if settings.call_provider != "threecx":
+        raise HTTPException(409, "3CX is disabled. Enable it only for the controlled test.")
+    if not _global_settings(db).test_call_enabled:
+        raise HTTPException(409, "Test calling is locked. Enable it in Alfred Settings when ready.")
+    if not settings.threecx_test_destination:
+        raise HTTPException(409, "Set THREECX_TEST_DESTINATION on the VPS before calling.")
+    if not settings.threecx_test_forward_destination:
+        raise HTTPException(
+            409,
+            "Set THREECX_TEST_FORWARD_DESTINATION on the VPS (for example 803) before running this test.",
+        )
+    routing = _global_settings(db)
+    routes = effective_dtmf_routes(routing)
+    first_destination = settings.threecx_test_first_destination or first_dtmf_route_destination(routing)
+    if not first_destination:
+        raise HTTPException(
+            409,
+            "Set THREECX_TEST_FIRST_DESTINATION on the VPS (for example 802) or configure keypad routes in Alfred Settings.",
+        )
+    if not routing.dtmf_routing_enabled:
+        raise HTTPException(409, "Enable DTMF routing in Alfred Settings so the opening message listens for a digit.")
+    if not routes:
+        raise HTTPException(409, "Configure at least one keypad route in Alfred Settings.")
+    opening_path = Path(settings.prerecorded_message_path)
+    transfer_path = Path(settings.transfer_message_path or settings.prerecorded_message_path)
+    forward_destination = settings.threecx_test_forward_destination
+    client = None
+    provider_call = None
+    dropped = False
+    digit = None
+    try:
+        client = ThreeCXClient(settings)
+        provider_call = client.start_test_call(settings.threecx_test_destination)
+        client.wait_until_connected(provider_call)
+        with client.monitor_dtmf(provider_call) as monitor:
+            digit, finish_playback = client.play_prerecorded_message_with_dtmf(
+                provider_call, monitor, opening_path, timeout_seconds=15,
+            )
+            try:
+                if resolve_dtmf_destination(digit, routes) is None:
+                    status = "no_input" if digit is None else "wrong_digit"
+                    try:
+                        client.drop_call(provider_call)
+                    except ThreeCXError:
+                        pass
+                    finally:
+                        dropped = True
+                    configured = ", ".join(f"{d}→{routes[d]}" for d in sorted(routes))
+                    return {
+                        "status": status,
+                        "digit": digit,
+                        "first_destination": None,
+                        "forward_destination": None,
+                        "message": f"Press a configured menu key during the opening message ({configured}).",
+                    }
+                client.route_to(provider_call, first_destination, 0)
+            finally:
+                finish_playback()
+        time.sleep(max(5, settings.threecx_test_forward_wait_seconds))
+        transfer_message_status = "played"
+        try:
+            client.play_prerecorded_message(provider_call, transfer_path)
+        except ThreeCXError as exc:
+            if "403" not in str(exc):
+                raise
+            transfer_message_status = "blocked_while_bridged"
+        client.transfer_to(provider_call, forward_destination, 0)
+        dropped = True
+        status = "forwarded" if transfer_message_status == "played" else "forwarded_without_message"
+        return {
+            "status": status,
+            "digit": digit,
+            "first_destination": first_destination,
+            "forward_destination": forward_destination,
+            "transfer_message_status": transfer_message_status,
+            "message": (
+                f"Routed to {first_destination}, "
+                + (
+                    "played transfer message, "
+                    if transfer_message_status == "played"
+                    else "skipped transfer message (3CX blocks audio while agent is connected), "
+                )
+                + f"then transferred to {forward_destination}."
+            ),
+        }
+    except ThreeCXError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    finally:
+        if client:
+            if provider_call is not None and not dropped:
+                try:
+                    client.drop_call(provider_call)
+                except ThreeCXError:
+                    pass
+            client.close()
+
+
+@app.post("/integrations/3cx/test-hold-then-stream", response_model=HoldThenStreamDiagnosticOut,
+          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
+def test_hold_then_stream(db: Session = Depends(get_db)):
+    """POC: first route to agent, wait for hold, try transfer MP3, optionally route again."""
+    settings = get_settings()
+    if settings.call_provider != "threecx":
+        raise HTTPException(409, "3CX is disabled. Enable it only for the controlled test.")
+    if not _global_settings(db).test_call_enabled:
+        raise HTTPException(409, "Test calling is locked. Enable it in Alfred Settings when ready.")
+    if not settings.threecx_test_destination:
+        raise HTTPException(409, "Set THREECX_TEST_DESTINATION on the VPS before calling.")
+    routing = _global_settings(db)
+    routes = effective_dtmf_routes(routing)
+    first_destination = settings.threecx_test_first_destination or first_dtmf_route_destination(routing)
+    if not first_destination:
+        raise HTTPException(
+            409,
+            "Set THREECX_TEST_FIRST_DESTINATION on the VPS (for example 802) or configure keypad routes in Alfred Settings.",
+        )
+    if not routing.dtmf_routing_enabled:
+        raise HTTPException(409, "Enable DTMF routing in Alfred Settings so the opening message listens for a digit.")
+    if not routes:
+        raise HTTPException(409, "Configure at least one keypad route in Alfred Settings.")
+    opening_path = Path(settings.prerecorded_message_path)
+    transfer_path = Path(settings.transfer_message_path or settings.prerecorded_message_path)
+    forward_destination = settings.threecx_test_forward_destination or None
+    client = None
+    provider_call = None
+    dropped = False
+    digit = None
+    try:
+        client = ThreeCXClient(settings)
+        provider_call = client.start_test_call(settings.threecx_test_destination)
+        client.wait_until_connected(provider_call)
+        with client.monitor_dtmf(provider_call) as monitor:
+            digit, finish_playback = client.play_prerecorded_message_with_dtmf(
+                provider_call, monitor, opening_path, timeout_seconds=15,
+            )
+            try:
+                if resolve_dtmf_destination(digit, routes) is None:
+                    status = "no_input" if digit is None else "wrong_digit"
+                    try:
+                        client.drop_call(provider_call)
+                    except ThreeCXError:
+                        pass
+                    finally:
+                        dropped = True
+                    configured = ", ".join(f"{d}→{routes[d]}" for d in sorted(routes))
+                    return {
+                        "status": status,
+                        "digit": digit,
+                        "first_destination": None,
+                        "message": (
+                            f"Press a configured menu key during the opening message ({configured}), "
+                            "then put the call on hold on the answering 3CX phone."
+                        ),
+                    }
+                client.route_to(provider_call, first_destination, 0)
+            finally:
+                finish_playback()
+        time.sleep(max(3, settings.threecx_test_forward_wait_seconds))
+        _participant, hold_detected, participant_status = client.wait_for_hold(
+            provider_call, max(10, settings.threecx_test_hold_wait_seconds),
+        )
+        stream_status = "played"
+        try:
+            client.play_prerecorded_message(provider_call, transfer_path)
+        except ThreeCXError as exc:
+            if "403" in str(exc):
+                stream_status = "blocked_after_hold" if hold_detected else "blocked_while_bridged"
+            else:
+                raise
+        forward_status = None
+        if forward_destination:
+            try:
+                client.route_to(provider_call, forward_destination, 0)
+                forward_status = "routed"
+                dropped = True
+            except ThreeCXError as exc:
+                forward_status = "blocked" if "403" in str(exc) else "failed"
+        if stream_status == "played" and forward_status == "routed":
+            status = "stream_played_and_forwarded"
+        elif stream_status == "played":
+            status = "stream_played"
+        elif forward_status == "routed":
+            status = "forwarded_without_stream"
+        else:
+            status = "stream_blocked"
+        return {
+            "status": status,
+            "digit": digit,
+            "first_destination": first_destination,
+            "forward_destination": forward_destination,
+            "hold_detected": hold_detected,
+            "participant_status": participant_status,
+            "stream_status": stream_status,
+            "forward_status": forward_status,
+            "message": (
+                f"Routed to {first_destination}. "
+                + (
+                    "Hold detected before streaming. "
+                    if hold_detected
+                    else f"No hold detected within {settings.threecx_test_hold_wait_seconds}s (press Hold on the 3CX app). "
+                )
+                + f"Stream: {stream_status}."
+                + (f" Forward to {forward_destination}: {forward_status}." if forward_destination else "")
+            ),
+        }
+    except ThreeCXError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    finally:
+        if client:
+            if provider_call is not None and not dropped:
+                try:
+                    client.drop_call(provider_call)
+                except ThreeCXError:
+                    pass
+            client.close()
 
 
 @app.post("/integrations/3cx/test-prerecorded-message",
@@ -429,79 +696,56 @@ def test_prerecorded_message(db: Session = Depends(get_db)):
     return {"status": "completed", "destination": settings.threecx_test_destination, "message": "prerecorded message played"}
 
 
-@app.post("/integrations/3cx/test-call",
+@app.post("/integrations/3cx/test-call", response_model=DtmfDiagnosticOut,
           dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
 def place_individual_test_call(payload: TestCallRequest, db: Session = Depends(get_db)):
-    """An operator-triggered, one-off test call; never part of a campaign."""
-    settings = get_settings()
-    if settings.call_provider != "threecx":
-        raise HTTPException(409, "3CX is not configured on this VPS")
-    if not _global_settings(db).test_call_enabled:
-        raise HTTPException(409, "Test calling is locked. Enable it in Alfred Settings and on the VPS when ready.")
-    client = None
-    call = None
-    try:
-        client = ThreeCXClient(settings)
-        call = client.start_test_call(payload.destination)
-        client.wait_until_connected(call)
-        client.play_prerecorded_message(call, Path(settings.prerecorded_message_path))
-        client.drop_call(call)
-    except ThreeCXError as exc:
-        raise HTTPException(502, str(exc)) from exc
-    finally:
-        if client:
-            client.close()
-    return {"status": "completed", "destination": payload.destination, "message": "prerecorded message played"}
+    """An operator-triggered, one-off test call with DTMF capture and optional queue routing."""
+    return _place_dtmf_test_call(payload.destination, db)
 
 
 @app.get("/settings", response_model=GlobalSettingsOut, dependencies=[Depends(require_roles("owner"))])
 def get_global_settings(db: Session = Depends(get_db)):
     settings = _global_settings(db)
     db.commit(); db.refresh(settings)
-    return settings
+    return _settings_out(settings)
 
 
 @app.put("/settings", response_model=GlobalSettingsOut,
          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
 def update_global_settings(payload: GlobalSettingsUpdate, db: Session = Depends(get_db)):
-    if payload.dtmf_routing_enabled and not payload.dtmf_queue_extension:
-        raise HTTPException(422, "Enter a default queue extension before enabling keypad routing")
+    routes = normalize_dtmf_routes(
+        payload.dtmf_routes_json,
+        legacy_digit=payload.dtmf_menu_digit,
+        legacy_ext=payload.dtmf_queue_extension,
+    )
+    if payload.dtmf_routing_enabled and not routes:
+        raise HTTPException(422, "Configure at least one keypad route before enabling routing")
     settings = _global_settings(db)
     for key, value in payload.model_dump().items():
         setattr(settings, key, value)
+    settings.dtmf_routes_json = routes
+    sync_legacy_dtmf_fields(settings)
     db.commit(); db.refresh(settings)
-    return settings
+    return _settings_out(settings)
 
 
 @app.post("/audio-assets", response_model=AudioAssetOut, status_code=status.HTTP_201_CREATED,
           dependencies=[Depends(require_roles("owner", "supervisor")), Depends(require_csrf)])
 async def upload_audio_asset(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    allowed = {"audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav"}
-    suffix = Path(file.filename or "").suffix.lower()
-    content_type = (file.content_type or "").lower()
-    if suffix not in {".mp3", ".wav"} or (content_type and content_type not in allowed):
-        raise HTTPException(422, "Upload an MP3 or WAV audio file")
-    raw = await file.read(get_settings().max_audio_upload_bytes + 1)
-    if not raw:
-        raise HTTPException(422, "Audio file is empty")
-    if len(raw) > get_settings().max_audio_upload_bytes:
-        raise HTTPException(413, "Audio file is too large")
-    checksum = hashlib.sha256(raw).hexdigest()
-    existing = db.scalar(select(AudioAsset).where(AudioAsset.checksum == checksum, AudioAsset.status == AudioAssetStatus.ready))
-    if existing:
-        return existing
-    storage_dir = Path(get_settings().audio_storage_dir)
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    storage_key = f"{uuid.uuid4().hex}{suffix}"
-    destination = storage_dir / storage_key
+    from .audio_upload import AudioUploadError, store_audio_asset
+
     try:
-        destination.write_bytes(raw)
-    except OSError as exc:
-        raise HTTPException(500, "Alfred could not store the audio file locally") from exc
-    asset = AudioAsset(display_name=Path(file.filename or storage_key).name, storage_key=storage_key,
-                       content_type=content_type or allowed.get(content_type, "audio/mpeg"), size_bytes=len(raw), checksum=checksum)
-    db.add(asset); db.commit(); db.refresh(asset)
-    return asset
+        raw = await file.read(get_settings().max_audio_upload_bytes + 1)
+        asset, created = store_audio_asset(
+            db,
+            get_settings(),
+            filename=file.filename or "",
+            content_type=file.content_type or "",
+            raw=raw,
+        )
+        return AudioAssetOut.model_validate(asset).model_copy(update={"reused": not created})
+    except AudioUploadError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/audio-assets", response_model=list[AudioAssetOut], dependencies=[Depends(current_user)])
@@ -515,8 +759,23 @@ def delete_audio_asset(asset_id: int, db: Session = Depends(get_db)):
     asset = db.get(AudioAsset, asset_id)
     if not asset or asset.status == AudioAssetStatus.deleted:
         raise HTTPException(404, "Audio file not found")
-    if db.scalar(select(PlaybookVersion.id).where(PlaybookVersion.opening_audio_id == asset_id).limit(1)):
-        raise HTTPException(409, "This audio file is used by a playbook and cannot be deleted")
+    linked = db.scalars(
+        select(PlaybookVersion)
+        .where(PlaybookVersion.opening_audio_id == asset_id)
+        .options(selectinload(PlaybookVersion.playbook))
+    ).all()
+    if linked:
+        playbook_names = sorted({
+            version.playbook.name for version in linked if version.playbook is not None
+        })
+        if playbook_names:
+            listed = ", ".join(playbook_names)
+            raise HTTPException(
+                409,
+                f"Cannot delete this audio file yet. Remove or replace it in these playbooks first: {listed}. "
+                "Delete unused playbooks in Settings → Call playbooks, then try again.",
+            )
+        raise HTTPException(409, "Cannot delete this audio file because a playbook still references it.")
     path = Path(get_settings().audio_storage_dir) / asset.storage_key
     try:
         if path.exists(): path.unlink()
@@ -665,17 +924,19 @@ async def upload_contacts(campaign_id: int, file: UploadFile, db: Session = Depe
         content = (await file.read()).decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise HTTPException(422, "CSV must be UTF-8 encoded") from exc
-    reader = csv.DictReader(StringIO(content))
-    if not reader.fieldnames or "phone" not in reader.fieldnames:
-        raise HTTPException(422, "CSV must include a phone column")
-    rows = [row for row in reader if (row.get("phone") or "").strip()]
-    if not rows:
-        raise HTTPException(422, "CSV must include at least one phone number")
+    from .contact_import import parse_contact_upload
+
+    try:
+        contacts = parse_contact_upload(content, file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not contacts:
+        raise HTTPException(422, "Upload must include at least one phone number")
     db.add_all([
-        _queued_call(campaign, row["phone"].strip(), (row.get("name") or None), (row.get("details") or None), db)
-        for row in rows
+        _queued_call(campaign, contact.phone, contact.name, contact.details, db)
+        for contact in contacts
     ])
-    db.commit(); return {"queued": len(rows)}
+    db.commit(); return {"queued": len(contacts)}
 
 
 @app.post("/campaigns/{campaign_id}/run-simulation", response_model=list[CallOut],
@@ -713,11 +974,24 @@ def place_next_live_call(campaign_id: int, db: Session = Depends(get_db)):
         raise HTTPException(409, str(exc)) from exc
 
 
-@app.get("/calls", response_model=list[CallOut], dependencies=[Depends(current_user)])
+@app.get("/calls", response_model=list[CallListItemOut], dependencies=[Depends(current_user)])
 def list_calls(campaign_id: int | None = None, db: Session = Depends(get_db)):
-    query = select(Call).options(selectinload(Call.metric), selectinload(Call._transcript), selectinload(Call.recording)).order_by(Call.created_at.desc())
-    if campaign_id: query = query.where(Call.campaign_id == campaign_id)
+    query = select(Call).options(selectinload(Call.recording)).order_by(Call.created_at.desc())
+    if campaign_id:
+        query = query.where(Call.campaign_id == campaign_id)
     return db.scalars(query).all()
+
+
+@app.get("/calls/{call_id}", response_model=CallOut, dependencies=[Depends(current_user)])
+def get_call(call_id: int, db: Session = Depends(get_db)):
+    call = db.scalar(
+        select(Call)
+        .options(selectinload(Call.metric), selectinload(Call._transcript), selectinload(Call.recording))
+        .where(Call.id == call_id)
+    )
+    if not call:
+        raise HTTPException(404, "Call not found")
+    return call
 
 
 @app.post("/calls/{call_id}/outcome", response_model=CallOut, dependencies=[Depends(require_csrf)])

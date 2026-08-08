@@ -273,6 +273,7 @@ class GlobalSettings(TimestampMixin, Base):
     dtmf_routing_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     dtmf_menu_digit: Mapped[str] = mapped_column(String(1), default="1", nullable=False)
     dtmf_queue_extension: Mapped[str | None] = mapped_column(String(20))
+    dtmf_routes_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     test_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     live_campaign_calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

@@ -65,7 +65,7 @@ class ThreeCXClientTests(unittest.TestCase):
             if request.url.path == "/connect/token":
                 return httpx.Response(200, json={"access_token": "temporary-token"})
             self.assertEqual(request.url.path, "/callcontrol/3cxapi/participants/72/routeto")
-            self.assertEqual(json.loads(request.content), {"destination": "801"})
+            self.assertEqual(json.loads(request.content), {"destination": "801", "reason": "None", "timeout": 90})
             return httpx.Response(200, json={"finalstatus": "Succeeded"})
 
         client = ThreeCXClient(self.settings(), transport=httpx.MockTransport(handler))

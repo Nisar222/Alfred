@@ -1,6 +1,6 @@
 from datetime import datetime
 import re
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from .models import AudioAssetStatus, CampaignStatus, CallStatus, Outcome, PlaybookStatus, Sentiment
 
 
@@ -31,18 +31,57 @@ class Contact(BaseModel):
     details: str | None = None
 
 
+def normalize_dial_destination(raw: str) -> str:
+    """Accept E.164 or national digits for 3CX outbound rules that prepend a prefix."""
+    cleaned = re.sub(r"[\s\-().]", "", raw.strip())
+    if not cleaned:
+        raise ValueError("Enter a phone number to call.")
+    if cleaned.startswith("+"):
+        if not re.fullmatch(r"\+[1-9]\d{7,14}", cleaned):
+            raise ValueError("Use + followed by country code and number, for example +46793555436.")
+        return cleaned
+    if cleaned.startswith("0"):
+        cleaned = cleaned.lstrip("0")
+    if not re.fullmatch(r"[1-9]\d{5,14}", cleaned):
+        raise ValueError(
+            "Use digits only (for example 793555436 when 3CX adds the country code) "
+            "or full international format (+46793555436)."
+        )
+    return cleaned
+
+
 class TestCallRequest(BaseModel):
-    destination: str = Field(min_length=8, max_length=20)
+    destination: str = Field(min_length=6, max_length=24)
 
     def model_post_init(self, __context) -> None:
-        if not re.fullmatch(r"\+[1-9]\d{7,14}", self.destination):
-            raise ValueError("Use an international phone number, for example +16282187213")
+        object.__setattr__(self, "destination", normalize_dial_destination(self.destination))
 
 
 class DtmfDiagnosticOut(BaseModel):
     status: str
     digit: str | None = None
     destination: str | None = None
+
+
+class ForwardChainDiagnosticOut(BaseModel):
+    status: str
+    digit: str | None = None
+    first_destination: str | None = None
+    forward_destination: str | None = None
+    transfer_message_status: str | None = None
+    message: str | None = None
+
+
+class HoldThenStreamDiagnosticOut(BaseModel):
+    status: str
+    digit: str | None = None
+    first_destination: str | None = None
+    forward_destination: str | None = None
+    hold_detected: bool = False
+    participant_status: str | None = None
+    stream_status: str | None = None
+    forward_status: str | None = None
+    message: str | None = None
 
 
 class AgentNotificationOut(BaseModel):
@@ -149,21 +188,26 @@ class MetricOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class CallOut(BaseModel):
+class CallListItemOut(BaseModel):
+    """Lightweight call row for dashboard lists — omits transcript and playbook snapshot."""
     id: int; campaign_id: int; phone: str; prospect_name: str | None; status: CallStatus
-    outcome: Outcome | None; transcript: str | None; duration_seconds: int | None; created_at: datetime
+    outcome: Outcome | None; duration_seconds: int | None; created_at: datetime
     sentiment: Sentiment = Sentiment.unknown; sentiment_confidence: int | None = None; sentiment_source: str = "not_available"
-    provider_call_id: str | None = None; failure_reason: str | None = None
-    failure_category: str | None = None; previous_attempt_id: int | None = None
-    attempt_number: int = 1; scheduled_for: datetime | None = None
-    dtmf_digit: str | None = None; routed_destination: str | None = None; routing_status: str | None = None
+    failure_reason: str | None = None; attempt_number: int = 1; scheduled_for: datetime | None = None
     started_at: datetime | None = None; completed_at: datetime | None = None
     recording_available: bool = False
+    model_config = {"from_attributes": True}
+
+
+class CallOut(CallListItemOut):
+    transcript: str | None = None
+    provider_call_id: str | None = None
+    failure_category: str | None = None; previous_attempt_id: int | None = None
+    dtmf_digit: str | None = None; routed_destination: str | None = None; routing_status: str | None = None
     call_summary: str | None = None
     transcript_segments: list[dict] = Field(default_factory=list)
     configuration_snapshot_json: dict = Field(default_factory=dict)
     metric: MetricOut | None = None
-    model_config = {"from_attributes": True}
 
 
 class GlobalSettingsUpdate(BaseModel):
@@ -179,8 +223,25 @@ class GlobalSettingsUpdate(BaseModel):
     dtmf_routing_enabled: bool = False
     dtmf_menu_digit: str = Field(default="1", pattern=r"^[0-9]$")
     dtmf_queue_extension: str | None = Field(default=None, pattern=r"^\d{2,10}$")
+    dtmf_routes_json: dict[str, str] = Field(default_factory=dict)
     test_call_enabled: bool = False
     live_campaign_calling_enabled: bool = False
+
+    @field_validator("dtmf_routes_json")
+    @classmethod
+    def validate_dtmf_routes_json(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for key, ext in (value or {}).items():
+            digit = str(key).strip()
+            if not re.fullmatch(r"[0-9]", digit):
+                raise ValueError(f"DTMF route key must be a single digit 0-9, got {key!r}")
+            extension = str(ext or "").strip()
+            if not extension:
+                continue
+            if not re.fullmatch(r"\d{2,10}", extension):
+                raise ValueError(f"DTMF route extension must be 2-10 digits, got {ext!r}")
+            normalized[digit] = extension
+        return normalized
 
 
 class GlobalSettingsOut(GlobalSettingsUpdate):
@@ -191,6 +252,7 @@ class GlobalSettingsOut(GlobalSettingsUpdate):
 class AudioAssetOut(BaseModel):
     id: int; display_name: str; content_type: str; size_bytes: int; checksum: str
     status: AudioAssetStatus; created_at: datetime
+    reused: bool = False
     model_config = {"from_attributes": True}
 
 
