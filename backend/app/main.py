@@ -38,6 +38,7 @@ from .notifications import ensure_diagnostic_routing_notification
 from .recording_sync import RecordingSync
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
+from .transcript_sync import TranscriptSync
 
 
 @asynccontextmanager
