@@ -245,10 +245,29 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
         call.failure_category = _failure_category(exc)
         call.completed_at = datetime.now(timezone.utc)
         _schedule_retry(call, campaign, db)
+    except Exception as exc:
+        call.status = CallStatus.failed
+        call.failure_reason = f"System error: {type(exc).__name__}"
+        call.completed_at = datetime.now(timezone.utc)
+        import logging
+        logging.error(f"Unexpected error in place_next_call: {exc}", exc_info=True)
     finally:
         if client:
             client.close()
-    db.commit(); db.refresh(call)
+        try:
+            db.commit()
+            db.refresh(call)
+        except Exception as commit_error:
+            import logging
+            logging.error(f"Failed to commit call {call.id}: {commit_error}", exc_info=True)
+            try:
+                db.rollback()
+                call.status = CallStatus.failed
+                call.failure_reason = "Commit failed"
+                call.completed_at = datetime.now(timezone.utc)
+                db.commit()
+            except:
+                pass
     return call
 
 

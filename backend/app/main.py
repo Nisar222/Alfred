@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from io import StringIO
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, File, status
@@ -36,47 +36,31 @@ from .threecx import ThreeCXClient, ThreeCXError
 from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
 from .notifications import ensure_diagnostic_routing_notification
 from .recording_sync import RecordingSync
-from .ghost_monitor import GhostCallMonitor
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
 from .transcript_sync import TranscriptSync
+from .ghost_monitor import GhostCallMonitor
 
-
-# Global refs to prevent garbage collection of background threads
-_background_services = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[LIFESPAN] Starting...", flush=True)
     Base.metadata.create_all(bind=engine)
-    
     dispatcher = CampaignDispatcher()
     recording_sync = RecordingSync()
     transcript_sync = TranscriptSync()
-    
-    # Store globally to prevent GC
-    _background_services['dispatcher'] = dispatcher
-    _background_services['recording_sync'] = recording_sync
-    _background_services['transcript_sync'] = transcript_sync
-    
-    print("[LIFESPAN] Starting dispatcher...", flush=True)
+    ghost_monitor = GhostCallMonitor()
     dispatcher.start()
-    print("[LIFESPAN] Starting recording sync...", flush=True)
     recording_sync.start()
-    print("[LIFESPAN] Starting transcript sync...", flush=True)
     transcript_sync.start()
-    
+    ghost_monitor.start()
     settings = get_settings()
     if settings.call_provider == "threecx":
-        print("[LIFESPAN] Running initial recording sync...", flush=True)
         with SessionLocal() as db:
             sync_threecx_recordings_safe(db, settings)
-    
-    print("[LIFESPAN] Startup complete", flush=True)
     try:
         yield
     finally:
-        print("[LIFESPAN] Shutting down...", flush=True)
+        ghost_monitor.stop()
         transcript_sync.stop()
         recording_sync.stop()
         dispatcher.stop()
@@ -1082,6 +1066,25 @@ def stream_call_recording(call_id: int, db: Session = Depends(get_db)):
 @app.get("/metrics/daily", dependencies=[Depends(current_user)])
 def get_daily_metrics(db: Session = Depends(get_db)):
     return daily_metrics(db)
+
+
+@app.get("/health/ghost-calls")
+def check_ghost_calls_health(db: Session = Depends(get_db)):
+    """Health check endpoint to monitor ghost calls."""
+    from sqlalchemy import func
+    threshold = datetime.now(timezone.utc) - timedelta(minutes=15)
+    ghost_count = db.scalar(
+        select(func.count(Call.id)).where(
+            Call.status == CallStatus.in_progress,
+            Call.started_at < threshold
+        )
+    ) or 0
+    return {
+        "ghost_calls": ghost_count,
+        "healthy": ghost_count == 0,
+        "threshold_minutes": 15,
+        "checked_at": datetime.now(timezone.utc).isoformat()
+    }
 
 
 frontend = Path(__file__).parent / "web"

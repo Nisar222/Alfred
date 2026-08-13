@@ -15,9 +15,15 @@
   <div id="live-status-bar" class="live-status-bar" hidden aria-live="polite">
     <button type="button" class="live-status-main" id="live-status-open">
       <span class="live-status-dot" id="live-status-dot" aria-hidden="true"></span>
+<<<<<<< HEAD
       <span class="live-status-copy"><strong id="live-status-title">Campaign running</strong><span id="live-status-detail">Loading status…</span></span>
     </button>
     <button type="button" class="quiet-button small" id="live-status-pause" hidden>Pause</button>
+=======
+      <span class="live-status-copy"><strong id="live-status-title">Calling</strong><span id="live-status-detail">Campaign status</span></span>
+    </button>
+    <button type="button" class="quiet-button small" id="live-status-pause">Pause</button>
+>>>>>>> a7c8eff47babbf86629674634aebb9b773ef73f2
   </div>
   <main id="today" class="app-main">
     <section id="today-view" class="app-view active-view">
@@ -61,12 +67,20 @@
         <aside class="call-log-sidebar" aria-label="Recent calls">
           <div class="call-log-toolbar">
             <div class="call-log-toolbar-row"><strong id="call-log-count">0 calls</strong><span id="call-log-filter-note">Newest first</span></div>
+<<<<<<< HEAD
             <label class="call-log-campaign-filter">Campaign<select id="call-log-campaign"><option value="">All campaigns</option></select></label>
             <div class="call-log-filters" role="tablist" aria-label="Filter call log">
               <button type="button" class="call-log-filter" data-call-filter="activity">Activity</button>
               <button type="button" class="call-log-filter" data-call-filter="review">To review</button>
               <button type="button" class="call-log-filter" data-call-filter="queued">Queued</button>
               <button type="button" class="call-log-filter active" data-call-filter="all">All</button>
+=======
+            <div class="call-log-filters" role="tablist" aria-label="Filter call log">
+              <button type="button" class="call-log-filter active" data-call-filter="activity">Activity</button>
+              <button type="button" class="call-log-filter" data-call-filter="review">To review</button>
+              <button type="button" class="call-log-filter" data-call-filter="queued">Queued</button>
+              <button type="button" class="call-log-filter" data-call-filter="all">All</button>
+>>>>>>> a7c8eff47babbf86629674634aebb9b773ef73f2
             </div>
           </div>
           <div id="call-log-list" class="call-log-list"></div>
