@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from io import StringIO
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Response, UploadFile, File, status
@@ -39,6 +39,7 @@ from .recording_sync import RecordingSync
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
 from .transcript_sync import TranscriptSync
+from .ghost_monitor import GhostCallMonitor
 
 
 @asynccontextmanager
@@ -47,9 +48,11 @@ async def lifespan(app: FastAPI):
     dispatcher = CampaignDispatcher()
     recording_sync = RecordingSync()
     transcript_sync = TranscriptSync()
+    ghost_monitor = GhostCallMonitor()
     dispatcher.start()
     recording_sync.start()
     transcript_sync.start()
+    ghost_monitor.start()
     settings = get_settings()
     if settings.call_provider == "threecx":
         with SessionLocal() as db:
@@ -57,6 +60,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        ghost_monitor.stop()
         transcript_sync.stop()
         recording_sync.stop()
         dispatcher.stop()
@@ -1062,6 +1066,25 @@ def stream_call_recording(call_id: int, db: Session = Depends(get_db)):
 @app.get("/metrics/daily", dependencies=[Depends(current_user)])
 def get_daily_metrics(db: Session = Depends(get_db)):
     return daily_metrics(db)
+
+
+@app.get("/health/ghost-calls")
+def check_ghost_calls_health(db: Session = Depends(get_db)):
+    """Health check endpoint to monitor ghost calls."""
+    from sqlalchemy import func
+    threshold = datetime.now(timezone.utc) - timedelta(minutes=15)
+    ghost_count = db.scalar(
+        select(func.count(Call.id)).where(
+            Call.status == CallStatus.in_progress,
+            Call.started_at < threshold
+        )
+    ) or 0
+    return {
+        "ghost_calls": ghost_count,
+        "healthy": ghost_count == 0,
+        "threshold_minutes": 15,
+        "checked_at": datetime.now(timezone.utc).isoformat()
+    }
 
 
 frontend = Path(__file__).parent / "web"
