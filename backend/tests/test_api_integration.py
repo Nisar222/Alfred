@@ -87,7 +87,7 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(call["status"] == "completed" and call["transcript"] for call in calls))
         self.assertTrue(all(call["sentiment"] == "positive" for call in calls))
-        self.assertTrue(all(call["sentiment_source"] == "deterministic-v1" for call in calls))
+        self.assertTrue(all(call["sentiment_source"] == "transcript-v1" for call in calls))
 
         sale = self.client.post(f"/calls/{calls[0]['id']}/outcome", json={"outcome": "sale"})
         self.assertEqual(sale.status_code, 200, sale.text)

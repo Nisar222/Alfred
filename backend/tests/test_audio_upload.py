@@ -3,15 +3,22 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from app.audio_upload import AudioUploadError, store_audio_asset, validate_audio_upload
 from app.config import get_settings
-from app.database import SessionLocal, init_db
+from app.database import Base
 from app.models import AudioAsset, AudioAssetStatus
 
 
 class AudioUploadTests(unittest.TestCase):
     def setUp(self):
-        init_db()
+        self.database_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.database_file.close()
+        self.engine = create_engine(f"sqlite:///{self.database_file.name}", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(self.engine)
+        self.SessionLocal = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
         self._tmpdir = tempfile.TemporaryDirectory()
         self._env = patch.dict("os.environ", {"AUDIO_STORAGE_DIR": self._tmpdir.name}, clear=False)
         self._env.start()
@@ -21,9 +28,10 @@ class AudioUploadTests(unittest.TestCase):
         self._env.stop()
         get_settings.cache_clear()
         self._tmpdir.cleanup()
+        Path(self.database_file.name).unlink(missing_ok=True)
 
     def test_reupload_after_delete_restores_asset(self):
-        db = SessionLocal()
+        db = self.SessionLocal()
         try:
             first, created = store_audio_asset(
                 db, get_settings(), filename="intro.mp3", content_type="audio/mpeg", raw=b"same-audio-bytes",
@@ -44,7 +52,7 @@ class AudioUploadTests(unittest.TestCase):
             db.close()
 
     def test_duplicate_ready_asset_is_reused(self):
-        db = SessionLocal()
+        db = self.SessionLocal()
         try:
             first, _ = store_audio_asset(
                 db, get_settings(), filename="one.mp3", content_type="audio/mpeg", raw=b"audio",

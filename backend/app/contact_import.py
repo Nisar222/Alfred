@@ -1,8 +1,10 @@
 import csv
+import re
 from dataclasses import dataclass
 from io import StringIO
 
 PHONE_HEADERS = frozenset({"phone", "number", "mobile", "tel", "telephone"})
+MIN_PHONE_DIGITS = 7  # Shortest plausible national number; rejects header/name rows.
 
 
 @dataclass(frozen=True)
@@ -10,6 +12,10 @@ class ParsedContact:
     phone: str
     name: str | None = None
     details: str | None = None
+
+
+def _looks_like_phone(value: str) -> bool:
+    return len(re.sub(r"\D", "", value)) >= MIN_PHONE_DIGITS
 
 
 def parse_contact_upload(content: str, filename: str = "") -> list[ParsedContact]:
@@ -36,6 +42,11 @@ def parse_contact_upload(content: str, filename: str = "") -> list[ParsedContact
                 continue
             if value.lower() in PHONE_HEADERS:
                 continue
+            if not _looks_like_phone(value):
+                raise ValueError(
+                    "Upload phone numbers only: one number per line in a .txt file, "
+                    "or a single-column list with an optional phone header row."
+                )
             contacts.append(ParsedContact(phone=value))
         return contacts
 
@@ -51,6 +62,8 @@ def parse_contact_upload(content: str, filename: str = "") -> list[ParsedContact
             phone = (row.get(phone_field) or "").strip()
             if not phone:
                 continue
+            if not _looks_like_phone(phone):
+                raise ValueError(f"'{phone}' in the {phone_field} column is not a valid phone number.")
             contacts.append(
                 ParsedContact(
                     phone=phone,
@@ -67,7 +80,13 @@ def parse_contact_upload(content: str, filename: str = "") -> list[ParsedContact
     ]
     if rows and all(len(row) == 1 for row in rows):
         start = 1 if rows[0][0].lower() in PHONE_HEADERS else 0
-        return [ParsedContact(phone=row[0]) for row in rows[start:] if row[0]]
+        values = [row[0] for row in rows[start:] if row[0]]
+        if any(not _looks_like_phone(value) for value in values):
+            raise ValueError(
+                "Upload phone numbers only: one number per line in a .txt file, "
+                "or a single-column list with an optional phone header row."
+            )
+        return [ParsedContact(phone=value) for value in values]
 
     raise ValueError(
         "Upload phone numbers only: one number per line in a .txt file, "
