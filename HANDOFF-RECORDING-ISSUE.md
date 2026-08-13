@@ -83,22 +83,29 @@ before fixing code.
   a narrow, safe field subset (id/name/extension/email) by design, so this
   was invisible anywhere in Alfred's code, logs, or UI.
 - **Fix:** Enabled `RecordCalls` for all agent extensions in the 3CX admin
-  console. As of this write-up, extension 100 (David Eriksson) is still
-  pending — David needs to do this himself; follow up with him directly.
+  console (102, 104, 105, 107, 108, 109). Extension 100 (David Eriksson) was
+  never enabled — David manages his own extension.
 - **Verification:** Live end-to-end test on 2026-08-13 — placed a test call
   (Alfred call id 4824) via `/integrations/3cx/test-call`, pressed DTMF `1`,
   call routed to extension 101, 3CX produced recording `Id 85`, Alfred's
   `RecordingSync` background worker linked it automatically within 30s, and
   the recording streamed successfully via `/calls/4824/recording` (200 OK).
+- **Update (2026-08-13, later same day):** The customer requested recording
+  be turned off for now. `RecordCalls` was reverted to `False` for every
+  extension except 101 (kept on for Alfred's own diagnostic/test calls).
+  **This is intentional, not a regression** — if a future check finds most
+  extensions with `RecordCalls: False` again, confirm with the customer
+  before treating it as a bug.
 
 ### Outstanding
 
-- [ ] Extension 100 (David Eriksson) — `RecordCalls` still off in 3CX. Ask
-      David to enable it himself.
-- [ ] No automated regression test yet covers "every enabled extension has
+- [ ] Recording is currently OFF for all real agent extensions by customer
+      request. Re-enable per-extension in the 3CX admin console (`RecordCalls`)
+      when the customer wants recording back on.
+- [ ] No automated regression test covers "every enabled extension has
       `RecordCalls` on" — this would need to poll 3CX directly (out of scope
       for the unit test suite, which never talks to live 3CX per `AGENTS.md`).
-      Worth a periodic manual check until agent onboarding covers it.
+      Low priority now that recording is intentionally off.
 
 ---
 
