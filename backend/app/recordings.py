@@ -36,6 +36,20 @@ def phone_key(value: str | None) -> str:
     return digits[-10:] if len(digits) >= 10 else digits
 
 
+def recording_phone_keys(recording: dict[str, Any]) -> set[str]:
+    """Return normalized numbers present on a 3CX recording row.
+
+    Outbound Alfred calls usually appear under ToCallerNumber; inbound and some
+    manual tests appear under FromCallerNumber.
+    """
+    keys: set[str] = set()
+    for field in ("FromCallerNumber", "ToCallerNumber", "FromDisplayName", "ToDisplayName"):
+        key = phone_key(str(recording.get(field) or ""))
+        if key:
+            keys.add(key)
+    return keys
+
+
 def parse_threecx_timestamp(value: object) -> datetime | None:
     if not value:
         return None
@@ -62,7 +76,7 @@ def _call_anchor(call: Call) -> datetime | None:
 
 def best_matching_call(recording: dict[str, Any], candidates: Iterable[Call]) -> Call | None:
     """Return the closest unmatched Alfred call for one 3CX recording row."""
-    caller = phone_key(str(recording.get("FromCallerNumber") or recording.get("FromDisplayName") or ""))
+    rec_keys = recording_phone_keys(recording)
     start = parse_threecx_timestamp(recording.get("StartTime"))
     if start is None:
         return None
@@ -71,7 +85,8 @@ def best_matching_call(recording: dict[str, Any], candidates: Iterable[Call]) ->
     best_delta: float | None = None
     for call in candidates:
         if not is_diagnostic_call(call):
-            if not caller or phone_key(call.phone) != caller:
+            call_key = phone_key(call.phone)
+            if not call_key or call_key not in rec_keys:
                 continue
         anchor = _call_anchor(call)
         if anchor is None:

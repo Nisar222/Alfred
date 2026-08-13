@@ -36,7 +36,6 @@ from .threecx import ThreeCXClient, ThreeCXError
 from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
 from .notifications import ensure_diagnostic_routing_notification
 from .recording_sync import RecordingSync
-from .ghost_monitor import GhostCallMonitor
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
 from .transcript_sync import TranscriptSync

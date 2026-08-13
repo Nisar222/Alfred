@@ -591,14 +591,10 @@ class ThreeCXClient:
         hold_stream = threading.Event()
         end_stream = threading.Event()
         stream_error: list[Exception] = []
-        message_finished_at: list[float | None] = [None]
-        post_message_deadline = lambda: (message_finished_at[0] or time.monotonic()) + timeout_seconds
-        hard_stop = time.monotonic() + max(timeout_seconds + 120, 180)
+        deadline = time.monotonic() + timeout_seconds
 
         def listen_for_dtmf() -> None:
-            while not end_stream.is_set() and time.monotonic() < hard_stop:
-                if message_finished_at[0] is not None and time.monotonic() >= post_message_deadline():
-                    return
+            while not end_stream.is_set() and time.monotonic() < deadline:
                 digit = monitor.poll(timeout_seconds=0.1)
                 if digit is not None:
                     captured_digit[0] = digit
@@ -612,20 +608,16 @@ class ThreeCXClient:
         def chunk_generator() -> Iterator[bytes]:
             assert process.stdout is not None
             try:
-                while not end_stream.is_set() and time.monotonic() < hard_stop:
+                while not end_stream.is_set():
                     if hold_stream.is_set():
                         yield self._SILENCE_CHUNK
                         time.sleep(0.02)
                         continue
+                    if time.monotonic() >= deadline:
+                        break
                     chunk = process.stdout.read(320)
                     if not chunk:
-                        if message_finished_at[0] is None:
-                            message_finished_at[0] = time.monotonic()
-                        if time.monotonic() >= post_message_deadline():
-                            break
-                        yield self._SILENCE_CHUNK
-                        time.sleep(0.02)
-                        continue
+                        break
                     yield chunk
             finally:
                 end_stream.set()
@@ -647,11 +639,7 @@ class ThreeCXClient:
         stream_thread = threading.Thread(target=run_stream, name="audio-stream", daemon=True)
         stream_thread.start()
 
-        while stream_thread.is_alive() and captured_digit[0] is None:
-            if message_finished_at[0] is not None and time.monotonic() >= post_message_deadline():
-                break
-            if time.monotonic() >= hard_stop:
-                break
+        while stream_thread.is_alive() and time.monotonic() < deadline and captured_digit[0] is None:
             time.sleep(0.05)
 
         def finish() -> None:

@@ -50,6 +50,23 @@ class RecordingMatchTests(unittest.TestCase):
         matched = best_matching_call(recording, [call])
         self.assertIs(matched, call)
 
+    def test_best_matching_call_matches_outbound_to_number(self):
+        anchor = datetime(2026, 8, 10, 12, 2, 0, tzinfo=timezone.utc)
+        call = Call(
+            id=68,
+            phone="+46793555436",
+            status=CallStatus.completed,
+            completed_at=anchor,
+            configuration_snapshot_json={"playbook": {"recording_enabled": True}},
+        )
+        recording = {
+            "Id": 68,
+            "FromCallerNumber": "105",
+            "ToCallerNumber": "46793555436",
+            "StartTime": "2026-08-10T12:02:20.774074Z",
+        }
+        self.assertIs(best_matching_call(recording, [call]), call)
+
     def test_best_matching_call_links_diagnostic_calls_by_time(self):
         anchor = datetime(2026, 8, 4, 22, 49, 29, tzinfo=timezone.utc)
         call = Call(

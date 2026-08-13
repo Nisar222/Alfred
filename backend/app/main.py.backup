@@ -36,47 +36,27 @@ from .threecx import ThreeCXClient, ThreeCXError
 from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
 from .notifications import ensure_diagnostic_routing_notification
 from .recording_sync import RecordingSync
-from .ghost_monitor import GhostCallMonitor
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
 from .transcript_sync import TranscriptSync
 
 
-# Global refs to prevent garbage collection of background threads
-_background_services = {}
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[LIFESPAN] Starting...", flush=True)
     Base.metadata.create_all(bind=engine)
-    
     dispatcher = CampaignDispatcher()
     recording_sync = RecordingSync()
     transcript_sync = TranscriptSync()
-    
-    # Store globally to prevent GC
-    _background_services['dispatcher'] = dispatcher
-    _background_services['recording_sync'] = recording_sync
-    _background_services['transcript_sync'] = transcript_sync
-    
-    print("[LIFESPAN] Starting dispatcher...", flush=True)
     dispatcher.start()
-    print("[LIFESPAN] Starting recording sync...", flush=True)
     recording_sync.start()
-    print("[LIFESPAN] Starting transcript sync...", flush=True)
     transcript_sync.start()
-    
     settings = get_settings()
     if settings.call_provider == "threecx":
-        print("[LIFESPAN] Running initial recording sync...", flush=True)
         with SessionLocal() as db:
             sync_threecx_recordings_safe(db, settings)
-    
-    print("[LIFESPAN] Startup complete", flush=True)
     try:
         yield
     finally:
-        print("[LIFESPAN] Shutting down...", flush=True)
         transcript_sync.stop()
         recording_sync.stop()
         dispatcher.stop()
