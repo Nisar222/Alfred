@@ -60,17 +60,39 @@ Create and review revisions in local/staging development, then commit them.
 
 ## Backup and restore
 
-Run a backup at least daily and before any migration:
+Automated daily backups are running via a systemd user timer (set up
+2026-08-13, the day before the first real campaign — backups had gone stale
+for 10 days before this):
+
+```bash
+systemctl --user status alfred-backup.timer     # next scheduled run
+systemctl --user start alfred-backup.service    # run one now
+journalctl --user -u alfred-backup.service      # check recent runs
+```
+
+Unit files: `~/.config/systemd/user/alfred-backup.{service,timer}`. Runs
+daily at 03:00 UTC (07:00 Asia/Dubai — outside campaign hours), writes to
+`/home/nisar/backups/alfred/postgres/` (`0600`, 14-day retention per
+`ops/backup-postgres.sh`), keeps the last 14 daily dumps. Requires
+`loginctl enable-linger nisar` (already set) so the timer survives logout —
+without it, a user-mode systemd instance stops when the last login session
+ends. The service runs the backup via `sg docker -c ...` rather than relying
+on ambient group membership: a freshly started user-systemd process does not
+reliably inherit the `docker` supplementary group the way an interactive SSH
+login does, and user units cannot set `SupplementaryGroups=` directly (that
+needs `CAP_SETGID`, which is unavailable to unprivileged systemd --user).
+
+To back up manually or to a different destination:
 
 ```bash
 set -a; . ./.env; set +a
 BACKUP_DIR=/srv/jamal-backups ./ops/backup-postgres.sh
 ```
 
-Set `/srv/jamal-backups` ownership and filesystem encryption before use. Add a
-systemd timer or another approved scheduler only after a successful manual run.
 For disaster recovery, stop the API, run `ops/restore-postgres.sh BACKUP_FILE`,
 start the API, and verify the health endpoint. Perform a restore drill monthly.
+The restore drill has **not** been performed yet — do this before relying on
+these backups under real pressure.
 
 ## Operational checks
 
