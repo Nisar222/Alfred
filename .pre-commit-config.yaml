@@ -1,0 +1,13 @@
+repos:
+  - repo: local
+    hooks:
+      - id: no-merge-conflict-markers
+        name: Block unresolved merge-conflict markers
+        # Catches the exact class of bug that shipped broken to production on
+        # 2026-08-13: a23ecf6 was committed with unresolved <<<<<<<  /=======/
+        # >>>>>>> markers in app.js, which broke the entire frontend once built
+        # into a Docker image. git's built-in check only runs during merges/
+        # rebases, not on ordinary commits, so this hook covers every commit.
+        entry: bash -c 'grep -RIln -E "^(<{7}|={7}|>{7}) ?" -- "$@" && exit 1 || exit 0' --
+        language: system
+        types: [text]

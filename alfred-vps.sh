@@ -1,42 +1,45 @@
 #!/bin/bash
 # Alfred VPS Helper Script
-# Usage: ./alfred-vps.sh {logs|status|restart|db|recordings}
+# Usage: ./alfred-vps.sh {logs|status|restart|db|recordings|pull|deploy|verify}
+set -euo pipefail
 
 VPS_HOST="nisar@165.154.217.39"
 VPS_PATH="~/apps/alfred"
+DB_USER="jamal"
+DB_NAME="jamal_dialler"
 
-case "$1" in
+case "${1:-}" in
   logs)
     echo "Fetching logs..."
-    ssh $VPS_HOST "cd $VPS_PATH && docker compose logs api --tail=100"
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose logs api --tail=100"
     ;;
-  
+
   status)
     echo "Checking status..."
-    ssh $VPS_HOST "cd $VPS_PATH && docker compose ps"
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose ps"
     ;;
-  
+
   restart)
     echo "Restarting API..."
-    ssh $VPS_HOST "cd $VPS_PATH && docker compose restart api"
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose restart api"
     ;;
-  
+
   db)
     echo "Database stats..."
-    ssh $VPS_HOST "cd $VPS_PATH && docker compose exec -T db psql -U alfred -d alfred -c \"
-      SELECT 
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose exec -T db psql -U $DB_USER -d $DB_NAME -c \"
+      SELECT
         (SELECT COUNT(*) FROM calls WHERE status='completed') as completed_calls,
         (SELECT COUNT(*) FROM recordings) as total_recordings,
         (SELECT COUNT(*) FROM calls WHERE status='completed' AND id IN (SELECT call_id FROM recordings)) as calls_with_recordings;
     \""
     ;;
-  
+
   recordings)
     echo "Recent calls and recordings..."
-    ssh $VPS_HOST "cd $VPS_PATH && docker compose exec -T db psql -U alfred -d alfred -c \"
-      SELECT 
-        c.id, 
-        c.phone, 
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose exec -T db psql -U $DB_USER -d $DB_NAME -c \"
+      SELECT
+        c.id,
+        c.phone,
         c.completed_at,
         CASE WHEN r.id IS NOT NULL THEN 'YES' ELSE 'NO' END as has_recording
       FROM calls c
@@ -46,28 +49,85 @@ case "$1" in
       LIMIT 10;
     \""
     ;;
-  
+
   pull)
-    echo "Pulling latest code and restarting..."
-    ssh $VPS_HOST "cd $VPS_PATH && git pull && docker compose restart api"
+    echo "WARNING: 'pull' only updates source and restarts — it does NOT rebuild"
+    echo "the image, so code changes will NOT take effect. Use 'deploy' instead."
+    echo "(This gap is exactly what shipped a broken app.js on 2026-08-13.)"
+    exit 1
     ;;
-  
+
+  deploy)
+    # Pulls the CI-built, tested image for the current main commit (see
+    # .github/workflows/ci.yml) rather than building from whatever the VPS
+    # working tree happens to contain. Falls back to a local build only if
+    # explicitly requested.
+    echo "Pulling latest code..."
+    ssh "$VPS_HOST" "cd $VPS_PATH && git pull --ff-only"
+    echo "Pulling tested image from GHCR..."
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose pull api"
+    echo "Restarting API with new image..."
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose up -d api"
+    echo "Verifying..."
+    "$0" verify
+    ;;
+
+  deploy-local-build)
+    # Escape hatch: build the image on the VPS from its current working tree
+    # instead of pulling from GHCR. Only use this when CI/registry access is
+    # unavailable — prefer 'deploy'.
+    echo "Pulling latest code..."
+    ssh "$VPS_HOST" "cd $VPS_PATH && git pull --ff-only"
+    echo "Building image from VPS working tree..."
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose build api"
+    echo "Restarting API with newly built image..."
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose up -d api"
+    echo "Verifying..."
+    "$0" verify
+    ;;
+
+  verify)
+    # Post-deploy smoke check: confirm the served frontend has no unresolved
+    # merge-conflict markers and the container reports healthy. This is the
+    # last line of defense if CI is ever bypassed.
+    echo "Checking served app.js for conflict markers..."
+    ssh "$VPS_HOST" "curl -fsS http://127.0.0.1:8000/app.js" > /tmp/alfred_verify_app_js
+    if grep -qE '^(<{7}|={7}|>{7}) ?' /tmp/alfred_verify_app_js; then
+      echo "FAIL: served app.js contains unresolved merge-conflict markers."
+      rm -f /tmp/alfred_verify_app_js
+      exit 1
+    fi
+    rm -f /tmp/alfred_verify_app_js
+    echo "OK: app.js is clean."
+    echo "Checking container health..."
+    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose ps api" | grep -q "healthy" \
+      && echo "OK: api container healthy." \
+      || { echo "FAIL: api container is not healthy."; exit 1; }
+    echo "Checking /health endpoint..."
+    ssh "$VPS_HOST" "curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health" | grep -q "200" \
+      && echo "OK: /health returned 200." \
+      || { echo "FAIL: /health did not return 200."; exit 1; }
+    echo "Deploy verified."
+    ;;
+
   *)
     echo "Alfred VPS Helper"
     echo ""
     echo "Usage: $0 {command}"
     echo ""
     echo "Commands:"
-    echo "  logs       - Show last 100 API log lines"
-    echo "  status     - Show container status"
-    echo "  restart    - Restart API container"
-    echo "  db         - Show database stats"
-    echo "  recordings - Show recent calls with recording status"
-    echo "  pull       - Pull latest code and restart"
+    echo "  logs                - Show last 100 API log lines"
+    echo "  status              - Show container status"
+    echo "  restart             - Restart API container (no image change)"
+    echo "  db                  - Show database stats"
+    echo "  recordings          - Show recent calls with recording status"
+    echo "  deploy              - Pull code + tested GHCR image, restart, verify"
+    echo "  deploy-local-build  - Pull code, build image on VPS, restart, verify"
+    echo "  verify              - Run post-deploy smoke checks only"
     echo ""
     echo "Examples:"
-    echo "  $0 logs"
-    echo "  $0 status"
+    echo "  $0 deploy"
+    echo "  $0 verify"
     echo "  $0 recordings"
     ;;
 esac

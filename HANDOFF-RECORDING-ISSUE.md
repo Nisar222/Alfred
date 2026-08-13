@@ -1,18 +1,41 @@
-# Handoff: Recording Investigation
+# Handoff: Recording Investigation (Resolved)
 
-**Date:** 2026-08-13  
-**Status:** Recordings not linking to calls (audio players missing in UI)  
-**Priority:** High - customer waiting
+**Original date:** 2026-08-13
+**Resolved:** 2026-08-13
+**Status:** Closed — root causes found and fixed. See "Actual Root Causes" below.
 
 ---
 
 ## Summary
 
-Recordings were working fine 48 hours ago but stopped. 3CX IS recording calls (confirmed by user test), but Alfred is not linking them. All other issues have been fixed and deployed.
+What looked like one problem ("recordings not linking to calls") was actually
+two unrelated problems stacked together:
+
+1. **The dashboard was non-functional.** A merge commit (`a23ecf6`) landed on
+   `main` with unresolved git merge-conflict markers still inside
+   `backend/app/web/app.js`. A Docker image was built from that broken state
+   and deployed to production. A JS syntax error at the top of the file meant
+   *no* JavaScript on the page executed — not just recording playback.
+   Settings, campaign actions, everything was silently dead. This is very
+   likely why the issue looked unresolved for days: nobody could trigger a
+   working test call through the UI to check.
+2. **3CX only records calls for users with the per-user `RecordCalls`
+   permission enabled.** Only extensions 101 (Nisar) and 105 (Gudo) had it on.
+   Every other agent extension had it off, so any campaign call routed to
+   another agent would never produce a 3CX recording — independent of
+   anything in Alfred's code.
+
+Neither of the two theories in the original version of this doc (a 3CX
+Route Point recording setting, or a regression in the phone-matching logic
+in `recordings.py`) was the actual cause. Both were reasonable guesses made
+without directly querying 3CX's raw `/xapi/v1/Users` payload or checking
+whether the deployed frontend matched the git source — worth remembering as
+a lesson for future investigations: verify what's actually running/configured
+before fixing code.
 
 ---
 
-## ✅ Already Fixed & Deployed
+## ✅ Already Fixed & Deployed (prior work, still valid)
 
 1. **Ghost Calls** - Complete ghost call monitoring system deployed:
    - `dispatcher.py` - Fixed commit error handling
@@ -21,7 +44,7 @@ Recordings were working fine 48 hours ago but stopped. 3CX IS recording calls (c
    - `/health/ghost-calls` endpoint added
    - **Status:** Live on VPS, protecting campaigns
 
-2. **UI Fixes** - All committed (commit d12256c):
+2. **UI Fixes** - Committed (commit d12256c):
    - Fixed `formatCallLogTime` undefined error
    - Changed default filter to "All"
    - Added campaign filter dropdown
@@ -34,223 +57,77 @@ Recordings were working fine 48 hours ago but stopped. 3CX IS recording calls (c
 
 ---
 
-## ❌ Current Issue: Recordings Not Linking
+## Actual Root Causes & Fixes
 
-### What We Know
+### 1. Broken production image (app.js merge conflict)
 
-1. **3CX is recording calls** (user confirmed)
-2. **Recordings worked 48 hours ago** (then stopped)
-3. **No 3CX config changes** (user confirmed)
-4. **RecordingSync is running** (verified in deployment)
-5. **Code changes made:**
-   - `recordings.py` - Improved phone number matching
-   - `recording_sync.py` - No changes
-   - `main.py` - Added recording sync to lifespan
+- **Cause:** `a23ecf6` ("Merge ghost call fixes from origin") was committed
+  with 6 unresolved `<<<<<<<`/`=======`/`>>>>>>>` blocks still in
+  `backend/app/web/app.js`. It was fixed two commits later in `d12256c`, but
+  an image had already been built from the broken `a23ecf6` state and never
+  rebuilt after the fix landed.
+- **Fix:** Rebuilt the API image from the current (clean) working tree and
+  redeployed (`docker compose build api && docker compose up -d api`).
+  Verified the served `/app.js` has zero conflict markers and byte-matches
+  the git working tree.
+- **Prevention:** See `.github/workflows/ci.yml` — every push/PR now fails
+  fast if conflict markers exist anywhere in `backend/`. There's also a local
+  pre-commit hook (`.pre-commit-config.yaml`) and a post-deploy smoke check
+  (`./alfred-vps.sh verify`, folded into `./alfred-vps.sh deploy`).
 
-### Hypothesis
+### 2. Per-user 3CX recording permission
 
-The sync is either:
-1. Silently failing (catching `ThreeCXError` at line 160 in `recordings.py`)
-2. Not finding matches (improved matching logic might have broken something)
-3. Not connecting to 3CX API
-4. Database issue
+- **Cause:** 3CX's `RecordCalls` user setting was `True` only for extensions
+  101 and 105. Confirmed directly via the raw XAPI payload
+  (`/xapi/v1/Users`, field `RecordCalls`) — Alfred's own client only exposes
+  a narrow, safe field subset (id/name/extension/email) by design, so this
+  was invisible anywhere in Alfred's code, logs, or UI.
+- **Fix:** Enabled `RecordCalls` for all agent extensions in the 3CX admin
+  console. As of this write-up, extension 100 (David Eriksson) is still
+  pending — David needs to do this himself; follow up with him directly.
+- **Verification:** Live end-to-end test on 2026-08-13 — placed a test call
+  (Alfred call id 4824) via `/integrations/3cx/test-call`, pressed DTMF `1`,
+  call routed to extension 101, 3CX produced recording `Id 85`, Alfred's
+  `RecordingSync` background worker linked it automatically within 30s, and
+  the recording streamed successfully via `/calls/4824/recording` (200 OK).
 
----
+### Outstanding
 
-## Next Steps - Immediate Diagnosis
-
-### 1. Check Recording Sync Status
-
-```bash
-cd ~/apps/alfred
-docker compose logs api --tail=200 | grep -i record
-```
-
-**Look for:**
-- Is sync running?
-- Any errors?
-- How many recordings linked?
-
-### 2. Check Database
-
-```bash
-# Count recordings
-docker compose exec db psql -U alfred -d alfred -c "SELECT COUNT(*) FROM recordings;"
-
-# Check recent calls
-docker compose exec db psql -U alfred -d alfred -c "
-SELECT 
-  id, 
-  phone, 
-  completed_at,
-  (SELECT COUNT(*) FROM recordings WHERE call_id = calls.id) as has_recording
-FROM calls 
-WHERE status = 'completed' 
-ORDER BY completed_at DESC 
-LIMIT 10;
-"
-```
-
-**Expected:** Should see some recordings, but recent calls probably have 0
-
-### 3. Test 3CX API Connection
-
-```bash
-docker compose exec api python3 << 'EOF'
-from app.config import get_settings
-from app.threecx import ThreeCXClient
-
-settings = get_settings()
-client = ThreeCXClient(settings)
-try:
-    recordings = client.list_xapi_recordings()
-    print(f"Found {len(recordings)} recordings in 3CX")
-    if recordings:
-        print(f"Latest recording ID: {recordings[0].get('Id')}")
-        print(f"  From: {recordings[0].get('FromCallerNumber')}")
-        print(f"  To: {recordings[0].get('ToCallerNumber')}")
-        print(f"  Start: {recordings[0].get('StartTime')}")
-except Exception as e:
-    print(f"ERROR: {type(e).__name__}: {e}")
-finally:
-    client.close()
-EOF
-```
-
-**Expected:** Should list 3CX recordings successfully
-
-### 4. Test Matching Logic
-
-```bash
-docker compose exec api python3 << 'EOF'
-from app.config import get_settings
-from app.database import SessionLocal
-from app.threecx import ThreeCXClient
-from app.recordings import sync_threecx_recordings
-
-settings = get_settings()
-client = ThreeCXClient(settings)
-with SessionLocal() as db:
-    try:
-        linked = sync_threecx_recordings(db, client)
-        print(f"Successfully linked {linked} recordings")
-    except Exception as e:
-        print(f"ERROR: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        client.close()
-EOF
-```
-
-**Expected:** Should link recordings or show specific error
+- [ ] Extension 100 (David Eriksson) — `RecordCalls` still off in 3CX. Ask
+      David to enable it himself.
+- [ ] No automated regression test yet covers "every enabled extension has
+      `RecordCalls` on" — this would need to poll 3CX directly (out of scope
+      for the unit test suite, which never talks to live 3CX per `AGENTS.md`).
+      Worth a periodic manual check until agent onboarding covers it.
 
 ---
 
-## Key Files
+## Reference: How recording sync actually works (still accurate)
 
-### Backend Files
-- `backend/app/recordings.py` - Matching logic (lines 77-100: `best_matching_call`)
-- `backend/app/recording_sync.py` - Background worker
-- `backend/app/models.py` - Recording model (line 248: `recording_available` property)
-- `backend/app/main.py` - Lifespan integration
+1. **RecordingSync** (daemon thread) runs every 30 seconds.
+2. Calls `sync_threecx_recordings_safe(db, settings)` — a no-op, with no log
+   output at all, if `CALL_PROVIDER != "threecx"`. This makes log-grepping
+   for "record" an unreliable diagnostic signal on its own; check the DB
+   `recordings` table and 3CX's `/xapi/v1/Recordings` directly instead.
+3. Fetches recordings from 3CX XAPI: `client.list_xapi_recordings()`.
+4. For each 3CX recording, extracts phone numbers from metadata and finds a
+   matching Alfred call within a 15-minute window (`recordings.py`).
+5. Frontend checks `call.recording_available`; audio streams from
+   `/calls/{id}/recording`.
 
-### Frontend Files
-- `backend/app/web/app.js` - Line 44: Audio player rendering
-  ```javascript
-  ${call.recording_available ? 
-    `<audio controls preload="none" src="/calls/${call.id}/recording"></audio>` : 
-    `<p class="recording-placeholder">Recording unavailable</p>`}
-  ```
-
----
-
-## Technical Context
-
-### How Recording Sync Works
-
-1. **RecordingSync** (daemon thread) runs every 30 seconds
-2. Calls `sync_threecx_recordings_safe(db, settings)`
-3. Fetches recordings from 3CX XAPI: `client.list_xapi_recordings()`
-4. For each 3CX recording:
-   - Extracts phone numbers from metadata
-   - Finds matching Alfred call (within 15min window)
-   - Creates `Recording` row linking to `Call`
-5. Frontend checks `call.recording_available` property
-6. Audio streams from `/calls/{id}/recording` endpoint
-
-### Matching Logic
-
-Phone numbers are normalized to last 10 digits:
-```python
-def phone_key(value: str) -> str:
-    digits = re.sub(r"\D", "", value or "")
-    return digits[-10:] if len(digits) >= 10 else digits
-```
-
-Checks these 3CX fields:
-- `FromCallerNumber`
-- `ToCallerNumber` 
-- `FromDisplayName`
-- `ToDisplayName`
-
-Matches calls within 15-minute window of recording start time.
+### Key files
+- `backend/app/recordings.py` — matching logic
+- `backend/app/recording_sync.py` — background worker
+- `backend/app/main.py` — lifespan integration, `/calls/{id}/recording`
+- `backend/app/web/app.js` — audio player rendering in the Call Log
 
 ---
 
-## Recent Changes (Last 48 Hours)
+## Deploying safely (updated process)
 
-### Commit d12256c: "Fix UI issues and improve recording matching"
-- **recordings.py:** Added `recording_phone_keys()` to check all 4 fields (was only checking `FromCallerNumber`)
-- **Test added:** `test_recordings.py` for outbound call matching
-
-**Potential Issue:** The improved matching might have a bug, OR it exposed an existing issue.
-
----
-
-## Likely Root Causes (In Order)
-
-1. **Silent API failure** - `ThreeCXError` being caught and ignored (line 160)
-2. **Matching logic bug** - New multi-field matching has edge case
-3. **Phone format mismatch** - 3CX changed number format in recordings
-4. **Timing issue** - Recording appears in 3CX before call completes in Alfred
-5. **Database constraint** - Unique constraint preventing links
-
----
-
-## SSH Issue Note
-
-**Previous agent had SSH connection issues** - shell error prevented running commands directly. If you encounter the same, use the other agent in "VPS SSH connection" window or have user run commands.
-
-Error message: `ssh:1: no matches found: db.refresh(call) that comes after client.close`
-
----
-
-## Success Criteria
-
-1. Run diagnostics above
-2. Identify why sync is failing
-3. Fix the issue
-4. Verify: Make test call → wait 5 min → audio player appears in UI
-5. Commit and deploy fix
-6. Inform user recordings are working
-
----
-
-## Contact Info
-
-- **VPS:** `ssh nisar@165.154.217.39`
-- **Project:** `/Users/nisarkhan/Documents/dev2/Alfred`
-- **Docker:** `cd ~/apps/alfred && docker compose`
-- **Repo:** `https://github.com/Nisar222/Alfred.git`
-
----
-
-## User Context
-
-- Customer is waiting to run campaigns
-- System must be stable and reliable
-- User is technical but prefers agent does the work
-- Ghost call issue was successfully resolved - this is the last blocking issue
-
-**Good luck! The diagnostics above should reveal the issue quickly.** 🎯
+Use `./alfred-vps.sh deploy` (pulls the CI-tested GHCR image; verifies the
+served frontend afterward) rather than a bare `git pull && restart`, which
+does **not** rebuild the image and would have silently kept serving the
+broken `app.js` even after `d12256c` fixed it in git. See
+`.github/workflows/ci.yml` and the comments in `docker-compose.yml` /
+`alfred-vps.sh` for the full flow.

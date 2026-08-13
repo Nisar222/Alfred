@@ -12,3 +12,7 @@ node_modules/
 dist/
 data/
 .DS_Store
+*.bak
+*.backup
+tmp-deploy/
+.claude/

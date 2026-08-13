@@ -33,6 +33,12 @@ services:
       - no-new-privileges:true
 
   api:
+    # CI builds and pushes this image from a tested `main` commit (see
+    # .github/workflows/ci.yml). Deploy with `docker compose pull && docker
+    # compose up -d` to run that known-good image. `image:` + `build:`
+    # together also let `docker compose up --build` still work for local
+    # development without registry access (see README).
+    image: ${ALFRED_API_IMAGE:-ghcr.io/nisar222/alfred-api:latest}
     build: ./backend
     restart: unless-stopped
     environment:
