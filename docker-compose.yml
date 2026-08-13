@@ -33,12 +33,11 @@ services:
       - no-new-privileges:true
 
   api:
-    # CI builds and pushes this image from a tested `main` commit (see
-    # .github/workflows/ci.yml). Deploy with `docker compose pull && docker
-    # compose up -d` to run that known-good image. `image:` + `build:`
-    # together also let `docker compose up --build` still work for local
-    # development without registry access (see README).
-    image: ${ALFRED_API_IMAGE:-ghcr.io/nisar222/alfred-api:latest}
+    # Builds locally from ./backend. A CI build-and-push-to-GHCR job was
+    # tried on 2026-08-14 but disabled after failing on every run (repo
+    # Actions permissions don't currently allow package writes — needs a
+    # GitHub admin to enable). Deploy with `./alfred-vps.sh deploy-local-build`
+    # (pulls code, rebuilds the image on the VPS, restarts, verifies).
     build: ./backend
     restart: unless-stopped
     environment:

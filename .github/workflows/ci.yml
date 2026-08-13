@@ -45,27 +45,11 @@ jobs:
           bash -n ops/backup-postgres.sh
           bash -n ops/restore-postgres.sh
 
-  build-and-push:
-    name: Build and push API image
-    runs-on: ubuntu-latest
-    needs: backend-tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: backend
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/alfred-api:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/alfred-api:latest
+# GHCR build-and-push job removed 2026-08-14: it failed on every run because
+# this repo's Actions workflow permissions don't currently allow package
+# writes (Settings -> Actions -> General -> Workflow permissions -> "Read and
+# write permissions" — needs a GitHub admin, not available from CI itself).
+# Re-add once that's confirmed, then switch alfred-vps.sh back to `deploy`
+# (pull GHCR image) instead of `deploy-local-build`. Until then the
+# conflict-marker check and test suite above are the active safety net, and
+# deploys build the image on the VPS directly.

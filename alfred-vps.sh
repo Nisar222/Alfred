@@ -58,24 +58,15 @@ case "${1:-}" in
     ;;
 
   deploy)
-    # Pulls the CI-built, tested image for the current main commit (see
-    # .github/workflows/ci.yml) rather than building from whatever the VPS
-    # working tree happens to contain. Falls back to a local build only if
-    # explicitly requested.
-    echo "Pulling latest code..."
-    ssh "$VPS_HOST" "cd $VPS_PATH && git pull --ff-only"
-    echo "Pulling tested image from GHCR..."
-    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose pull api"
-    echo "Restarting API with new image..."
-    ssh "$VPS_HOST" "cd $VPS_PATH && docker compose up -d api"
-    echo "Verifying..."
-    "$0" verify
-    ;;
-
-  deploy-local-build)
-    # Escape hatch: build the image on the VPS from its current working tree
-    # instead of pulling from GHCR. Only use this when CI/registry access is
-    # unavailable — prefer 'deploy'.
+    # Pulls latest code, rebuilds the image on the VPS from that working
+    # tree, restarts, and verifies. A CI build-and-push-to-GHCR job (pull a
+    # pre-tested image instead of building here) was tried on 2026-08-14 but
+    # disabled after failing on every run — this repo's Actions workflow
+    # permissions don't currently allow package writes (needs a GitHub admin:
+    # Settings -> Actions -> General -> Workflow permissions -> "Read and
+    # write permissions"). Once that's fixed and .github/workflows/ci.yml's
+    # build-and-push job is restored, switch this back to `docker compose
+    # pull api` instead of `build api`.
     echo "Pulling latest code..."
     ssh "$VPS_HOST" "cd $VPS_PATH && git pull --ff-only"
     echo "Building image from VPS working tree..."
@@ -121,8 +112,7 @@ case "${1:-}" in
     echo "  restart             - Restart API container (no image change)"
     echo "  db                  - Show database stats"
     echo "  recordings          - Show recent calls with recording status"
-    echo "  deploy              - Pull code + tested GHCR image, restart, verify"
-    echo "  deploy-local-build  - Pull code, build image on VPS, restart, verify"
+    echo "  deploy              - Pull code, build image on VPS, restart, verify"
     echo "  verify              - Run post-deploy smoke checks only"
     echo ""
     echo "Examples:"
