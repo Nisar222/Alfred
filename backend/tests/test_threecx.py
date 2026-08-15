@@ -99,6 +99,53 @@ class ThreeCXClientTests(unittest.TestCase):
         ])
         self.assertEqual(requests.count("/connect/token"), 1)
 
+    def test_reuses_cached_token_across_repeated_polling_calls(self):
+        from app.threecx import ThreeCXTestCall
+
+        token_requests = []
+
+        def handler(request):
+            if request.url.path == "/connect/token":
+                token_requests.append(1)
+                return httpx.Response(200, json={"access_token": "temporary-token"})
+            self.assertEqual(request.headers["Authorization"], "Bearer temporary-token")
+            self.assertEqual(request.url.path, "/callcontrol/3cxapi")
+            return httpx.Response(200, json={"participants": [{"id": 72, "status": "Connected"}]})
+
+        client = ThreeCXClient(self.settings(), transport=httpx.MockTransport(handler))
+        try:
+            call = ThreeCXTestCall(72, "+15551234567", "ok", "ok")
+            client.wait_until_connected(call)
+            client.get_participant(call)
+        finally:
+            client.close()
+        self.assertEqual(len(token_requests), 1)
+
+    def test_retries_once_with_a_fresh_token_after_a_401(self):
+        from app.threecx import ThreeCXTestCall
+
+        token_requests = []
+        callcontrol_attempts = []
+
+        def handler(request):
+            if request.url.path == "/connect/token":
+                token_requests.append(1)
+                return httpx.Response(200, json={"access_token": f"token-{len(token_requests)}"})
+            callcontrol_attempts.append(request.headers["Authorization"])
+            if len(callcontrol_attempts) == 1:
+                return httpx.Response(401, json={"error": "invalid_token"})
+            self.assertEqual(request.headers["Authorization"], "Bearer token-2")
+            return httpx.Response(200, json={"participants": [{"id": 72, "status": "Connected"}]})
+
+        client = ThreeCXClient(self.settings(), transport=httpx.MockTransport(handler))
+        try:
+            call = ThreeCXTestCall(72, "+15551234567", "ok", "ok")
+            client.wait_until_connected(call)
+        finally:
+            client.close()
+        self.assertEqual(len(token_requests), 2)
+        self.assertEqual(len(callcontrol_attempts), 2)
+
     def test_resolves_ring_group_and_queue_members_to_extensions(self):
         def handler(request):
             if request.url.path == "/connect/token":

@@ -166,6 +166,7 @@ class ThreeCXClient:
             timeout=settings.threecx_timeout_seconds,
             transport=transport,
         )
+        self._cached_token: str | None = None
 
     def close(self) -> None:
         self.client.close()
@@ -187,7 +188,16 @@ class ThreeCXClient:
             return ThreeCXError(message + suffix)
         return ThreeCXError(message)
 
-    def _access_token(self) -> str:
+    def _access_token(self, *, force_refresh: bool = False) -> str:
+        """Return a cached client-credentials token, fetching a new one only
+        when there isn't one yet or the caller knows the cached one was
+        rejected. Repeated per-request token fetches (the previous
+        behaviour) put enough load on 3CX's /connect/token endpoint during a
+        live campaign's 1-second call-status polling to cause intermittent
+        401s on unrelated /callcontrol reads.
+        """
+        if self._cached_token is not None and not force_refresh:
+            return self._cached_token
         try:
             response = self.client.post(
                 "/connect/token",
@@ -204,6 +214,7 @@ class ThreeCXClient:
         token = response.json().get("access_token")
         if not token:
             raise ThreeCXError("3CX did not return an access token.")
+        self._cached_token = token
         return token
 
     def list_devices(self) -> list[ThreeCXDevice]:
@@ -252,8 +263,20 @@ class ThreeCXClient:
             )
         return entities
 
-    def _authorized_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._access_token()}"}
+    def _authorized_headers(self, *, force_refresh: bool = False) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._access_token(force_refresh=force_refresh)}"}
+
+    def _get_with_reauth(self, path: str) -> httpx.Response:
+        """GET an authorized endpoint, retrying once with a forced token
+        refresh if the cached token is rejected. Route Point call-state
+        polling calls this once per second for up to threecx_test_call_timeout_seconds,
+        so a single stale/rejected cached token must not fail the whole call.
+        """
+        response = self.client.get(path, headers=self._authorized_headers())
+        if response.status_code == 401:
+            response = self.client.get(path, headers=self._authorized_headers(force_refresh=True))
+        response.raise_for_status()
+        return response
 
     @staticmethod
     def _field(payload: object, *names: str) -> object | None:
@@ -455,11 +478,7 @@ class ThreeCXClient:
         last_status = "unknown"
         while time.monotonic() < deadline:
             try:
-                response = self.client.get(
-                    f"/callcontrol/{self.source_dn}",
-                    headers=self._authorized_headers(),
-                )
-                response.raise_for_status()
+                response = self._get_with_reauth(f"/callcontrol/{self.source_dn}")
             except httpx.HTTPError as exc:
                 raise self._failure("3CX could not read the Route Point call state.", exc) from exc
             participant = next(
@@ -487,11 +506,7 @@ class ThreeCXClient:
     def get_participant(self, call: ThreeCXTestCall) -> dict[str, Any] | None:
         """Return the current Route Point participant snapshot, if present."""
         try:
-            response = self.client.get(
-                f"/callcontrol/{self.source_dn}",
-                headers=self._authorized_headers(),
-            )
-            response.raise_for_status()
+            response = self._get_with_reauth(f"/callcontrol/{self.source_dn}")
         except httpx.HTTPError as exc:
             raise self._failure("3CX could not read the Route Point call state.", exc) from exc
         return next(
