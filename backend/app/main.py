@@ -132,9 +132,16 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Email or password is incorrect.")
     token, csrf_token, _session = create_session(db, user)
     db.commit()
+    # SameSite=Lax (not Strict): Strict withholds the session cookie whenever the
+    # dashboard is re-opened via a top-level navigation from another context
+    # (home-screen/PWA launch, an external link, returning to a backgrounded
+    # tab), which on mobile Safari makes the first request look unauthenticated
+    # and repeatedly bounces the user to the login screen. Lax still sends the
+    # cookie on those top-level navigations; unsafe cross-site requests remain
+    # blocked and every mutation additionally requires the CSRF header token.
     response.set_cookie(
         SESSION_COOKIE, token, max_age=get_settings().session_ttl_hours * 3600,
-        secure=True, httponly=True, samesite="strict", path="/",
+        secure=True, httponly=True, samesite="lax", path="/",
     )
     return {"user": _current_user_out(user), "csrf_token": csrf_token}
 
