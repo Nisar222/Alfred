@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     transfer_message_path: str = ""
     session_ttl_hours: int = 12
     transcript_sync_enabled: bool = True
+    recording_sync_enabled: bool = True
     whisper_model_size: str = "base"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"

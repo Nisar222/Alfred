@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     transcript_sync.start()
     ghost_monitor.start()
     settings = get_settings()
-    if settings.call_provider == "threecx":
+    if settings.call_provider == "threecx" and settings.recording_sync_enabled:
         with SessionLocal() as db:
             sync_threecx_recordings_safe(db, settings)
     try:

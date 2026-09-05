@@ -24,7 +24,7 @@ class RecordingSync:
     def _run(self) -> None:
         while not self.stop_event.wait(self.poll_seconds):
             settings = get_settings()
-            if settings.call_provider != "threecx":
+            if settings.call_provider != "threecx" or not settings.recording_sync_enabled:
                 continue
             with SessionLocal() as db:
                 sync_threecx_recordings_safe(db, settings)
