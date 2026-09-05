@@ -155,6 +155,21 @@ class ThreeCXDtmfMonitor:
 class ThreeCXClient:
     _SILENCE_CHUNK = b"\x00" * 320
 
+    # Process-wide client-credentials tokens, shared by every ThreeCXClient
+    # instance and background thread and keyed by (base_url, app_id). 3CX
+    # invalidates any previously issued token for a Service Principal the moment
+    # a new one is minted, so each component minting its own token would revoke
+    # the token an in-progress call is using (401 on stream/drop). Sharing one
+    # token, refreshed only near its expiry, prevents that mid-call revocation.
+    _token_lock = threading.Lock()
+    _token_cache: dict[tuple[str, str], tuple[str, float]] = {}
+
+    @classmethod
+    def _reset_token_cache(cls) -> None:
+        """Clear the shared token cache (used to isolate unit tests)."""
+        with cls._token_lock:
+            cls._token_cache.clear()
+
     def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None):
         if not settings.threecx_base_url or not settings.threecx_app_id or not settings.threecx_api_key:
             raise ThreeCXError("3CX is not configured. Add the base URL, app ID, and API key on the VPS.")
@@ -166,7 +181,7 @@ class ThreeCXClient:
             timeout=settings.threecx_timeout_seconds,
             transport=transport,
         )
-        self._cached_token: str | None = None
+        self._last_token: str | None = None
 
     def close(self) -> None:
         self.client.close()
@@ -189,15 +204,34 @@ class ThreeCXClient:
         return ThreeCXError(message)
 
     def _access_token(self, *, force_refresh: bool = False) -> str:
-        """Return a cached client-credentials token, fetching a new one only
-        when there isn't one yet or the caller knows the cached one was
-        rejected. Repeated per-request token fetches (the previous
-        behaviour) put enough load on 3CX's /connect/token endpoint during a
-        live campaign's 1-second call-status polling to cause intermittent
-        401s on unrelated /callcontrol reads.
+        """Return the process-wide shared client-credentials token.
+
+        3CX invalidates a Service Principal's previous token whenever a new one
+        is minted, so all components must reuse a single token rather than each
+        minting its own (which would revoke the token an in-progress call is
+        using). A new token is fetched only when none is cached, the cached one
+        is near expiry, or a caller reports its token was rejected (401) and no
+        other thread has already refreshed it.
         """
-        if self._cached_token is not None and not force_refresh:
-            return self._cached_token
+        key = (self.settings.threecx_base_url.rstrip("/"), self.settings.threecx_app_id)
+        with self._token_lock:
+            cached = self._token_cache.get(key)
+            fresh = cached is not None and time.monotonic() < cached[1]
+            if not force_refresh and fresh:
+                self._last_token = cached[0]
+                return cached[0]
+            # A concurrent thread may have already replaced a rejected token.
+            if force_refresh and fresh and cached[0] != self._last_token:
+                self._last_token = cached[0]
+                return cached[0]
+            token, ttl = self._fetch_token()
+            # Refresh ahead of the real expiry so a token is never used past it.
+            self._token_cache[key] = (token, time.monotonic() + max(30.0, ttl - 120.0))
+            self._last_token = token
+            return token
+
+    def _fetch_token(self) -> tuple[str, float]:
+        """Mint one client-credentials token and return it with its lifetime."""
         try:
             response = self.client.post(
                 "/connect/token",
@@ -211,11 +245,17 @@ class ThreeCXClient:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise ThreeCXError("3CX authentication failed. Check the app ID, API key, and API permissions.") from exc
-        token = response.json().get("access_token")
+        payload = response.json()
+        token = payload.get("access_token")
         if not token:
             raise ThreeCXError("3CX did not return an access token.")
-        self._cached_token = token
-        return token
+        try:
+            ttl = float(payload.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            ttl = 0.0
+        if ttl <= 0:
+            ttl = 300.0
+        return token, ttl
 
     def list_devices(self) -> list[ThreeCXDevice]:
         token = self._access_token()
@@ -706,13 +746,18 @@ class ThreeCXClient:
         destination: str,
         failure_message: str,
     ) -> None:
-        try:
-            response = self.client.post(
+        def send(headers: dict[str, str]) -> httpx.Response:
+            return self.client.post(
                 f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/{action}",
-                headers=self._authorized_headers(),
+                headers=headers,
                 json={"destination": destination, "reason": "None", "timeout": 90},
                 timeout=max(90.0, self.settings.threecx_timeout_seconds),
             )
+
+        try:
+            response = send(self._authorized_headers())
+            if response.status_code == 401:
+                response = send(self._authorized_headers(force_refresh=True))
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise ThreeCXError(f"3CX did not finish the {action} attempt within 90 seconds.") from exc
@@ -720,12 +765,17 @@ class ThreeCXClient:
             raise self._failure(failure_message, exc) from exc
 
     def drop_call(self, call: ThreeCXTestCall) -> None:
-        try:
-            response = self.client.post(
+        def send(headers: dict[str, str]) -> httpx.Response:
+            return self.client.post(
                 f"/callcontrol/{self.source_dn}/participants/{call.participant_id}/drop",
-                headers=self._authorized_headers(),
+                headers=headers,
                 json={},
             )
+
+        try:
+            response = send(self._authorized_headers())
+            if response.status_code == 401:
+                response = send(self._authorized_headers(force_refresh=True))
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise self._failure("The message finished, but 3CX could not end the test call.", exc) from exc

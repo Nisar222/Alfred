@@ -8,6 +8,12 @@ from app.threecx import ThreeCXClient, parse_dtmf_event
 
 
 class ThreeCXClientTests(unittest.TestCase):
+    def setUp(self):
+        ThreeCXClient._reset_token_cache()
+
+    def tearDown(self):
+        ThreeCXClient._reset_token_cache()
+
     def test_parses_only_dtmf_for_the_application_participant(self):
         message = '{"event":{"event_type":2,"entity":"/callcontrol/3cxapi/participants/72","attached_data":{"dtmf_input":"1"}}}'
         self.assertEqual(parse_dtmf_event(message, "3cxapi", 72), "1")
@@ -145,6 +151,36 @@ class ThreeCXClientTests(unittest.TestCase):
             client.close()
         self.assertEqual(len(token_requests), 2)
         self.assertEqual(len(callcontrol_attempts), 2)
+
+    def test_shares_one_token_across_client_instances(self):
+        """A second client (e.g. the background recording sync) must reuse the
+        shared token instead of minting a new one. Minting a second token would
+        make 3CX revoke the first, which is what broke in-progress calls."""
+        from app.threecx import ThreeCXTestCall
+
+        a_tokens: list[int] = []
+        b_tokens: list[int] = []
+
+        def make_handler(counter: list[int]):
+            def handler(request):
+                if request.url.path == "/connect/token":
+                    counter.append(1)
+                    return httpx.Response(200, json={"access_token": "shared-token", "expires_in": 3600})
+                self.assertEqual(request.headers["Authorization"], "Bearer shared-token")
+                return httpx.Response(200, json={"participants": [{"id": 72, "status": "Connected"}]})
+            return handler
+
+        call = ThreeCXTestCall(72, "+15551234567", "ok", "ok")
+        client_a = ThreeCXClient(self.settings(), transport=httpx.MockTransport(make_handler(a_tokens)))
+        client_b = ThreeCXClient(self.settings(), transport=httpx.MockTransport(make_handler(b_tokens)))
+        try:
+            client_a.get_participant(call)  # first use mints the shared token
+            client_b.get_participant(call)  # a separate client reuses it, no new mint
+        finally:
+            client_a.close()
+            client_b.close()
+        self.assertEqual(len(a_tokens), 1)
+        self.assertEqual(len(b_tokens), 0)
 
     def test_resolves_ring_group_and_queue_members_to_extensions(self):
         def handler(request):
