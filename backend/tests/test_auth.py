@@ -47,7 +47,11 @@ class AuthTests(unittest.TestCase):
 
         login = self.client.post("/auth/login", json={"email": "OWNER@example.test", "password": "correct horse battery staple"})
         self.assertEqual(login.status_code, 200, login.text)
-        self.assertIn("alfred_session", login.headers.get("set-cookie", ""))
+        set_cookie = login.headers.get("set-cookie", "")
+        self.assertIn("alfred_session", set_cookie)
+        # Lax keeps the session across mobile top-level navigations (home-screen
+        # launch, external links, returning to a backgrounded tab); Strict does not.
+        self.assertIn("samesite=lax", set_cookie.lower())
         csrf = login.json()["csrf_token"]
         self.assertEqual(self.client.get("/auth/me").json()["role"], "owner")
 
