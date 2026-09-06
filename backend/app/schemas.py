@@ -229,6 +229,7 @@ class CallOut(CallListItemOut):
     provider_call_id: str | None = None
     failure_category: str | None = None; previous_attempt_id: int | None = None
     dtmf_digit: str | None = None; routed_destination: str | None = None; routing_status: str | None = None
+    dtmf_events: list[dict] = Field(default_factory=list, validation_alias="dtmf_events_json")
     call_summary: str | None = None
     transcript_segments: list[dict] = Field(default_factory=list)
     configuration_snapshot_json: dict = Field(default_factory=dict)

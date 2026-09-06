@@ -233,6 +233,7 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
                         client.drop_call(provider_call)
                 finally:
                     finish_playback()
+            call.dtmf_events_json = list(monitor.observed_digits)
         else:
             client.play_prerecorded_message(provider_call, audio_path)
             client.drop_call(provider_call)

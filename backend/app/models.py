@@ -222,6 +222,10 @@ class Call(TimestampMixin, Base):
     failure_reason: Mapped[str | None] = mapped_column(Text)
     failure_category: Mapped[str | None] = mapped_column(String(40))
     dtmf_digit: Mapped[str | None] = mapped_column(String(1))
+    # Ordered record of every DTMF digit the callee pressed during the call,
+    # each entry {"digit": "1", "at": "<iso8601>"}. dtmf_digit stays as the
+    # single digit that drove routing; this keeps the full keypress history.
+    dtmf_events_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     routed_destination: Mapped[str | None] = mapped_column(String(20))
     routing_status: Mapped[str | None] = mapped_column(String(40))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
