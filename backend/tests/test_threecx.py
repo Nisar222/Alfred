@@ -182,6 +182,39 @@ class ThreeCXClientTests(unittest.TestCase):
         self.assertEqual(len(a_tokens), 1)
         self.assertEqual(len(b_tokens), 0)
 
+    def test_monitor_records_every_observed_dtmf_digit(self):
+        from app.threecx import ThreeCXDtmfMonitor, ThreeCXTestCall
+
+        client = ThreeCXClient(self.settings(), transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+        monitor = ThreeCXDtmfMonitor(client, ThreeCXTestCall(72, "+15551234567", "ok", "ok"))
+
+        class FakeConnection:
+            def __init__(self, messages):
+                self._messages = list(messages)
+
+            def recv(self, timeout=None):
+                if self._messages:
+                    return self._messages.pop(0)
+                raise TimeoutError()
+
+            def close(self):
+                pass
+
+        monitor.connection = FakeConnection([
+            '{"event":{"event_type":2,"entity":"/callcontrol/3cxapi/participants/72","attached_data":{"dtmf_input":"1"}}}',
+            '{"event":{"event_type":2,"entity":"/callcontrol/3cxapi/participants/72","attached_data":{"dtmf_input":"2"}}}',
+        ])
+        try:
+            first = monitor.poll(timeout_seconds=0.1)
+            second = monitor.poll(timeout_seconds=0.1)
+            empty = monitor.poll(timeout_seconds=0.1)
+        finally:
+            client.close()
+
+        self.assertEqual((first, second, empty), ("1", "2", None))
+        self.assertEqual([event["digit"] for event in monitor.observed_digits], ["1", "2"])
+        self.assertTrue(all("at" in event for event in monitor.observed_digits))
+
     def test_resolves_ring_group_and_queue_members_to_extensions(self):
         def handler(request):
             if request.url.path == "/connect/token":
