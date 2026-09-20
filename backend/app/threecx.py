@@ -268,13 +268,15 @@ class ThreeCXClient:
         return token, ttl
 
     def list_devices(self) -> list[ThreeCXDevice]:
-        token = self._access_token()
         extension = self.settings.threecx_control_extension
+
+        def send(headers: dict[str, str]) -> httpx.Response:
+            return self.client.get(f"/callcontrol/{extension}/devices", headers=headers)
+
         try:
-            response = self.client.get(
-                f"/callcontrol/{extension}/devices",
-                headers={"Authorization": f"Bearer {token}"},
-            )
+            response = send(self._authorized_headers())
+            if response.status_code == 401:
+                response = send(self._authorized_headers(force_refresh=True))
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise ThreeCXError(
@@ -350,6 +352,9 @@ class ThreeCXClient:
             seen.add(next_path)
             try:
                 response = self.client.get(next_path, headers=headers)
+                if response.status_code == 401:
+                    headers = self._authorized_headers(force_refresh=True)
+                    response = self.client.get(next_path, headers=headers)
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise self._failure("3CX could not read its user directory.", exc) from exc
@@ -502,12 +507,20 @@ class ThreeCXClient:
         return self.settings.threecx_app_id
 
     def start_test_call(self, destination: str) -> ThreeCXTestCall:
-        try:
-            response = self.client.post(
+        def send(headers: dict[str, str]) -> httpx.Response:
+            return self.client.post(
                 f"/callcontrol/{self.source_dn}/makecall",
-                headers=self._authorized_headers(),
+                headers=headers,
                 json={"destination": destination, "timeout": self.settings.threecx_test_call_timeout_seconds},
             )
+
+        try:
+            response = send(self._authorized_headers())
+            # 3CX invalidates the app's previous token whenever a new one is
+            # minted anywhere, so the cached token can be rejected between calls;
+            # refresh once and retry so call start self-heals instead of failing.
+            if response.status_code == 401:
+                response = send(self._authorized_headers(force_refresh=True))
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise self._failure("3CX could not start the test call. Check the route point and outbound route.", exc) from exc

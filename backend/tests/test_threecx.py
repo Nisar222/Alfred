@@ -182,6 +182,31 @@ class ThreeCXClientTests(unittest.TestCase):
         self.assertEqual(len(a_tokens), 1)
         self.assertEqual(len(b_tokens), 0)
 
+    def test_start_test_call_refreshes_and_retries_after_401(self):
+        """makecall must recover if the cached token was revoked (e.g. another
+        component minted a new token), instead of failing the whole call."""
+        token_requests, attempts = [], []
+
+        def handler(request):
+            if request.url.path == "/connect/token":
+                token_requests.append(1)
+                return httpx.Response(200, json={"access_token": f"tok-{len(token_requests)}", "expires_in": 3600})
+            self.assertEqual(request.url.path, "/callcontrol/3cxapi/makecall")
+            attempts.append(request.headers["Authorization"])
+            if len(attempts) == 1:
+                return httpx.Response(401, json={"error": "invalid_token"})
+            self.assertEqual(request.headers["Authorization"], "Bearer tok-2")
+            return httpx.Response(200, json={"result": {"id": 55}, "finalstatus": "Dialing"})
+
+        client = ThreeCXClient(self.settings(), transport=httpx.MockTransport(handler))
+        try:
+            call = client.start_test_call("+15551234567")
+        finally:
+            client.close()
+        self.assertEqual(call.participant_id, 55)
+        self.assertEqual(len(token_requests), 2)  # initial mint, then one refresh
+        self.assertEqual(len(attempts), 2)         # 401, then success
+
     def test_monitor_records_every_observed_dtmf_digit(self):
         from app.threecx import ThreeCXDtmfMonitor, ThreeCXTestCall
 
