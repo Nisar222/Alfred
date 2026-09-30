@@ -222,6 +222,9 @@ class Call(TimestampMixin, Base):
     failure_reason: Mapped[str | None] = mapped_column(Text)
     failure_category: Mapped[str | None] = mapped_column(String(40))
     dtmf_digit: Mapped[str | None] = mapped_column(String(1))
+    # Every key the caller pressed while Alfred was listening, in order.
+    # dtmf_digit stays the single key that decided routing.
+    dtmf_events_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     routed_destination: Mapped[str | None] = mapped_column(String(20))
     routing_status: Mapped[str | None] = mapped_column(String(40))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

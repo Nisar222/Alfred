@@ -1,5 +1,6 @@
 """Small, deliberately constrained 3CX V20 Call Control client."""
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -104,6 +105,14 @@ class ThreeCXDtmfMonitor:
         self.client = client
         self.call = call
         self.connection: ClientConnection | None = None
+        self.observed_digits: list[dict] = []
+
+    def _record(self, digit: str | None) -> str | None:
+        if digit is not None:
+            self.observed_digits.append(
+                {"digit": digit, "at": datetime.now(timezone.utc).isoformat()}
+            )
+        return digit
 
     def __enter__(self) -> "ThreeCXDtmfMonitor":
         parsed = urlparse(self.client.settings.threecx_base_url.rstrip("/"))
@@ -129,7 +138,7 @@ class ThreeCXDtmfMonitor:
             return None
         except Exception as exc:
             raise ThreeCXError("The Route Point event channel closed unexpectedly.") from exc
-        return parse_dtmf_event(str(message), self.client.source_dn, self.call.participant_id)
+        return self._record(parse_dtmf_event(str(message), self.client.source_dn, self.call.participant_id))
 
     def wait(self, timeout_seconds: int) -> str | None:
         if self.connection is None:
@@ -142,7 +151,7 @@ class ThreeCXDtmfMonitor:
                 return None
             except Exception as exc:
                 raise ThreeCXError("The Route Point event channel closed unexpectedly.") from exc
-            digit = parse_dtmf_event(str(message), self.client.source_dn, self.call.participant_id)
+            digit = self._record(parse_dtmf_event(str(message), self.client.source_dn, self.call.participant_id))
             if digit is not None:
                 return digit
         return None
@@ -611,15 +620,19 @@ class ThreeCXClient:
         hard_stop = time.monotonic() + max(timeout_seconds + 120, 180)
 
         def listen_for_dtmf() -> None:
+            # Keep listening after the first key so later presses are stored too.
+            # Only the first key decides routing and stops the opening message.
             while not end_stream.is_set() and time.monotonic() < hard_stop:
                 if message_finished_at[0] is not None and time.monotonic() >= post_message_deadline():
                     return
-                digit = monitor.poll(timeout_seconds=0.1)
-                if digit is not None:
+                try:
+                    digit = monitor.poll(timeout_seconds=0.1)
+                except ThreeCXError:
+                    return
+                if digit is not None and captured_digit[0] is None:
                     captured_digit[0] = digit
                     hold_stream.set()
                     self._stop_ffmpeg(process)
-                    return
 
         listener = threading.Thread(target=listen_for_dtmf, name="dtmf-listener", daemon=True)
         listener.start()
