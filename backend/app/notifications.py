@@ -49,6 +49,46 @@ def ensure_routing_notification(
     return notification
 
 
+def _diagnostic_campaign(db: Session) -> Campaign:
+    campaign = db.scalar(select(Campaign).where(Campaign.name == DIAGNOSTIC_CAMPAIGN_NAME))
+    if campaign:
+        return campaign
+    campaign = Campaign(
+        name=DIAGNOSTIC_CAMPAIGN_NAME,
+        script="Owner-triggered diagnostic calls from Alfred Settings.",
+        status=CampaignStatus.paused,
+        timezone="Asia/Dubai",
+        calling_window_json={"start": "00:00", "end": "23:59"},
+    )
+    db.add(campaign)
+    db.flush()
+    return campaign
+
+
+def record_diagnostic_keypresses(
+    db: Session,
+    *,
+    digit: str | None,
+    events: list[dict],
+    routing_status: str,
+) -> Call:
+    """Store keys pressed on a test call that was not transferred to an agent."""
+    call = Call(
+        campaign_id=_diagnostic_campaign(db).id,
+        phone="diagnostic",
+        prospect_name="Test caller",
+        status=CallStatus.completed,
+        dtmf_digit=digit,
+        dtmf_events_json=list(events),
+        routing_status=routing_status,
+        completed_at=datetime.now(timezone.utc),
+        configuration_snapshot_json={"source": "test-dtmf"},
+    )
+    db.add(call)
+    db.flush()
+    return call
+
+
 def ensure_diagnostic_routing_notification(
     db: Session,
     *,
@@ -57,17 +97,7 @@ def ensure_diagnostic_routing_notification(
     recipient_extension: str | None,
 ) -> AgentNotification:
     """Record a popup for a successful owner-triggered test-dtmf transfer."""
-    campaign = db.scalar(select(Campaign).where(Campaign.name == DIAGNOSTIC_CAMPAIGN_NAME))
-    if not campaign:
-        campaign = Campaign(
-            name=DIAGNOSTIC_CAMPAIGN_NAME,
-            script="Owner-triggered diagnostic calls from Alfred Settings.",
-            status=CampaignStatus.paused,
-            timezone="Asia/Dubai",
-            calling_window_json={"start": "00:00", "end": "23:59"},
-        )
-        db.add(campaign)
-        db.flush()
+    campaign = _diagnostic_campaign(db)
 
     resolved_extension = recipient_extension or destination
     call = Call(

@@ -34,7 +34,7 @@ from .auth import SESSION_COOKIE, create_session, current_session, current_user,
 from .services import analyze_sentiment, daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
 from .dispatcher import CampaignDispatcher, DispatchError, place_next_call
-from .notifications import ensure_diagnostic_routing_notification
+from .notifications import ensure_diagnostic_routing_notification, record_diagnostic_keypresses
 from .recording_sync import RecordingSync
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
@@ -379,6 +379,9 @@ def _run_dtmf_diagnostic(
     """Listen for DTMF during playback and route to the configured queue when matched."""
     digit = None
     dropped = False
+    logged_call = None
+    destination = None
+    result = {"status": "no_input", "digit": None, "destination": None}
     routing = _global_settings(db)
     routes = effective_dtmf_routes(routing)
     with client.monitor_dtmf(provider_call) as monitor:
@@ -392,31 +395,42 @@ def _run_dtmf_diagnostic(
                     recipient_extension = client.single_member_extension(destination)
                 except ThreeCXError:
                     recipient_extension = None
-                ensure_diagnostic_routing_notification(
+                notification = ensure_diagnostic_routing_notification(
                     db,
                     destination=destination,
                     digit=digit,
                     recipient_extension=recipient_extension,
                 )
+                logged_call = notification.call
                 db.commit()
                 client.route_to(provider_call, destination, 0)
                 dropped = True
-                return (
-                    {"status": "routed", "digit": digit, "destination": destination},
-                    dropped,
-                )
-            try:
-                client.drop_call(provider_call)
-            except ThreeCXError:
-                pass
-            finally:
-                dropped = True
+                result = {"status": "routed", "digit": digit, "destination": destination}
+            else:
+                try:
+                    client.drop_call(provider_call)
+                except ThreeCXError:
+                    pass
+                finally:
+                    dropped = True
+                result = {"status": "received" if digit else "no_input", "digit": digit, "destination": None}
         finally:
-            finish_playback()
-    return (
-        {"status": "received" if digit else "no_input", "digit": digit, "destination": None},
-        dropped,
-    )
+            try:
+                finish_playback()
+            finally:
+                events = list(monitor.observed_digits)
+                if logged_call is not None:
+                    logged_call.dtmf_events_json = events
+                    db.commit()
+                elif events:
+                    record_diagnostic_keypresses(
+                        db,
+                        digit=digit,
+                        events=events,
+                        routing_status="invalid_input" if destination is None else "received",
+                    )
+                    db.commit()
+    return result, dropped
 
 
 def _place_dtmf_test_call(destination: str, db: Session) -> dict:

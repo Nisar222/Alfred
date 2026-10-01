@@ -201,39 +201,41 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
         campaign_override = campaign_policy.get("dtmf_queue_extension_override")
         if routing_enabled and routes:
             with client.monitor_dtmf(provider_call) as monitor:
-                call.dtmf_digit, finish_playback = client.play_prerecorded_message_with_dtmf(
-                    provider_call, monitor, audio_path, timeout_seconds=15,
-                )
                 try:
-                    route_destination = resolve_dtmf_destination(call.dtmf_digit, routes)
-                    if route_destination:
-                        destination = campaign_override or route_destination
-                        call.routed_destination = str(destination)
-                        try:
-                            recipient_extension = client.single_member_extension(str(destination))
-                        except ThreeCXError:
-                            recipient_extension = None
-                        call.routing_status = "routing"
-                        ensure_routing_notification(
-                            call, db, recipient_extension=recipient_extension or str(destination)
-                        )
-                        db.commit()
-                        try:
-                            client.route_to(provider_call, str(destination), call.id)
-                            call.routing_status = "routed"
-                        except ThreeCXError as exc:
-                            call.routing_status = "route_failed"
-                            call.failure_reason = str(exc)
+                    call.dtmf_digit, finish_playback = client.play_prerecorded_message_with_dtmf(
+                        provider_call, monitor, audio_path, timeout_seconds=15,
+                    )
+                    try:
+                        route_destination = resolve_dtmf_destination(call.dtmf_digit, routes)
+                        if route_destination:
+                            destination = campaign_override or route_destination
+                            call.routed_destination = str(destination)
                             try:
-                                client.drop_call(provider_call)
+                                recipient_extension = client.single_member_extension(str(destination))
                             except ThreeCXError:
-                                pass
-                    else:
-                        call.routing_status = "no_input" if call.dtmf_digit is None else "invalid_input"
-                        client.drop_call(provider_call)
+                                recipient_extension = None
+                            call.routing_status = "routing"
+                            ensure_routing_notification(
+                                call, db, recipient_extension=recipient_extension or str(destination)
+                            )
+                            db.commit()
+                            try:
+                                client.route_to(provider_call, str(destination), call.id)
+                                call.routing_status = "routed"
+                            except ThreeCXError as exc:
+                                call.routing_status = "route_failed"
+                                call.failure_reason = str(exc)
+                                try:
+                                    client.drop_call(provider_call)
+                                except ThreeCXError:
+                                    pass
+                        else:
+                            call.routing_status = "no_input" if call.dtmf_digit is None else "invalid_input"
+                            client.drop_call(provider_call)
+                    finally:
+                        finish_playback()
                 finally:
-                    finish_playback()
-            call.dtmf_events_json = list(monitor.observed_digits)
+                    call.dtmf_events_json = list(monitor.observed_digits)
         else:
             client.play_prerecorded_message(provider_call, audio_path)
             client.drop_call(provider_call)
