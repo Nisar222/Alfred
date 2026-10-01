@@ -11,7 +11,7 @@ from app.auth import hash_password
 from app.database import Base, get_db
 from app.main import app
 from app.models import AgentNotification, Call, Campaign, User
-from app.notifications import ensure_routing_notification
+from app.notifications import ensure_routing_notification, record_diagnostic_keypresses
 
 
 class AgentNotificationTests(unittest.TestCase):
@@ -90,6 +90,36 @@ class AgentNotificationTests(unittest.TestCase):
             f"/agent/notifications/{self.notification_id}/ack", headers={"X-CSRF-Token": csrf}
         )
         self.assertEqual(response.status_code, 404)
+
+    def test_call_detail_includes_dtmf_keypress_history(self):
+        self._login("owner@example.test", "owner password")
+        with self.sessions() as db:
+            call = db.query(Call).one()
+            call.dtmf_events_json = [
+                {"digit": "1", "at": "2026-01-01T00:00:00+00:00"},
+                {"digit": "4", "at": "2026-01-01T00:00:01+00:00"},
+            ]
+            call_id = call.id
+            db.commit()
+        response = self.client.get(f"/calls/{call_id}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([event["digit"] for event in response.json()["dtmf_events"]], ["1", "4"])
+
+    def test_unrouted_test_call_keypresses_are_stored_without_a_popup(self):
+        with self.sessions() as db:
+            call = record_diagnostic_keypresses(
+                db,
+                digit="9",
+                events=[
+                    {"digit": "9", "at": "2026-01-01T00:00:00+00:00"},
+                    {"digit": "1", "at": "2026-01-01T00:00:02+00:00"},
+                ],
+                routing_status="invalid_input",
+            )
+            db.commit()
+            self.assertEqual(call.phone, "diagnostic")
+            self.assertEqual([event["digit"] for event in call.dtmf_events_json], ["9", "1"])
+            self.assertEqual(db.query(AgentNotification).count(), 1)
 
     def test_owner_can_inspect_without_marking_delivered(self):
         self._login("owner@example.test", "owner password")
