@@ -16,3 +16,6 @@ data/
 *.backup
 tmp-deploy/
 .claude/
+
+# Local Cloud Agent dev data (SQLite db + audio uploads)
+.dev-data/

@@ -1,0 +1,11 @@
+{
+  "name": "Alfred dev",
+  "install": "sudo apt-get update && sudo apt-get install -y --no-install-recommends python3.12-venv ffmpeg && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -r backend/requirements.txt",
+  "terminals": [
+    {
+      "name": "api",
+      "command": "mkdir -p .dev-data/uploads && DATABASE_URL='sqlite:////workspace/.dev-data/alfred_dev.db' AUDIO_STORAGE_DIR='/workspace/.dev-data/uploads' CALL_PROVIDER=simulator MAX_CONCURRENT_CALLS=8 CORS_ORIGINS='http://localhost:8000' PYTHONPATH=backend .venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000"
+    }
+  ],
+  "ports": [8000]
+}
