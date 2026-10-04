@@ -23,6 +23,24 @@ class SchemaTests(unittest.TestCase):
         columns = {column["name"] for column in inspect(engine).get_columns("calls")}
         self.assertIn("dtmf_events_json", columns)
 
+    def test_gateway_line_schema(self):
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        inspector = inspect(engine)
+        self.assertIn("gateway_lines", inspector.get_table_names())
+        call_columns = {column["name"] for column in inspector.get_columns("calls")}
+        self.assertTrue({"gateway_line", "gateway_prefix"} <= call_columns)
+        self.assertIn("gateway_lines_json", {column["name"] for column in inspector.get_columns("campaigns")})
+        indexes = {index["name"]: index for index in inspector.get_indexes("calls")}
+        self.assertTrue(indexes["uq_calls_active_gateway_line"]["unique"])
+
+    def test_gateway_line_migration_follows_dtmf_events(self):
+        from pathlib import Path
+        source = (Path(__file__).resolve().parents[1] / "alembic" / "versions" / "a3e6c0d54f21_add_gateway_lines.py").read_text()
+        self.assertIn('down_revision = "d7f3a1c95b28"', source)
+        self.assertIn('f"88{number:02d}"', source)
+        self.assertIn("range(1, 33)", source)
+
     def test_callout_exposes_dtmf_events_history(self):
         call = SimpleNamespace(
             id=1, campaign_id=1, phone="+15551234567", prospect_name=None,

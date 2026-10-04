@@ -6,7 +6,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import Call, CallStatus, Campaign, CampaignStatus, GlobalSettings
+from .gateway_lines import busy_line_numbers, campaign_line_numbers
+from .models import Call, CallStatus, Campaign, CampaignStatus, GatewayLine, GlobalSettings
 
 
 def _start_of_local_day(tz_name: str) -> datetime:
@@ -24,11 +25,18 @@ def live_campaign_status(db: Session) -> dict:
         select(Campaign).where(Campaign.status == CampaignStatus.active).order_by(Campaign.created_at.desc())
     ).all()
 
+    busy_lines = busy_line_numbers(db)
+    enabled_lines = set(db.scalars(select(GatewayLine.number).where(GatewayLine.enabled.is_(True))).all())
+
     campaigns_out = []
     for campaign in active_campaigns:
         tz_name = campaign.timezone or default_tz
         start_of_day = _start_of_local_day(tz_name)
         line_limit = campaign.max_concurrent_calls_override or max_global
+        gateway_lines = campaign_line_numbers(campaign)
+        usable_lines = [number for number in gateway_lines if number in enabled_lines]
+        if gateway_lines:
+            line_limit = min(line_limit, len(usable_lines))
 
         queued = db.scalar(
             select(func.count(Call.id)).where(Call.campaign_id == campaign.id, Call.status == CallStatus.queued)
@@ -71,10 +79,16 @@ def live_campaign_status(db: Session) -> dict:
                     "phone": call.phone,
                     "started_at": call.started_at,
                     "elapsed_seconds": elapsed,
+                    "gateway_line": call.gateway_line,
                 }
             )
 
         lines_in_use = len(live_calls)
+        waiting_reason = None
+        if gateway_lines and not usable_lines:
+            waiting_reason = "None of this campaign's lines are switched on"
+        elif gateway_lines and queued and all(number in busy_lines for number in usable_lines):
+            waiting_reason = "Waiting for a free line"
         campaigns_out.append(
             {
                 "id": campaign.id,
@@ -85,6 +99,8 @@ def live_campaign_status(db: Session) -> dict:
                 "completed_today": completed_today,
                 "failed_today": failed_today,
                 "live_calls": live_calls,
+                "gateway_lines": gateway_lines,
+                "waiting_reason": waiting_reason,
             }
         )
 

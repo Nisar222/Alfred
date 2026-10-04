@@ -14,6 +14,40 @@ class CampaignCreate(BaseModel):
     caller_id_override: str | None = Field(default=None, max_length=80)
     max_concurrent_calls_override: int | None = Field(default=None, ge=1, le=16)
     dtmf_queue_extension_override: str | None = Field(default=None, pattern=r"^\d{2,10}$")
+    # Gateway lines (1–32) to rotate through; empty uses the standard route with no prefix.
+    gateway_lines: list[int] = Field(default_factory=list, max_length=32)
+
+    @field_validator("gateway_lines")
+    @classmethod
+    def _valid_gateway_lines(cls, value: list[int]) -> list[int]:
+        return _gateway_line_numbers(value)
+
+
+def _gateway_line_numbers(value: list[int]) -> list[int]:
+    if any(not 1 <= number <= 32 for number in value):
+        raise ValueError("Gateway lines must be between 1 and 32")
+    return sorted(set(value))
+
+
+class CampaignGatewayLinesUpdate(BaseModel):
+    gateway_lines: list[int] = Field(default_factory=list, max_length=32)
+
+    @field_validator("gateway_lines")
+    @classmethod
+    def _valid_gateway_lines(cls, value: list[int]) -> list[int]:
+        return _gateway_line_numbers(value)
+
+
+class GatewayLineOut(BaseModel):
+    number: int; prefix: str; label: str | None = None; enabled: bool
+    status: str; needs_attention: bool = False
+    calls_today: int = 0; answered_today: int = 0; failed_today: int = 0
+
+
+class GatewayLineUpdate(BaseModel):
+    number: int = Field(ge=1, le=32)
+    label: str | None = Field(default=None, max_length=80)
+    enabled: bool
 
 
 class CampaignOut(BaseModel):
@@ -22,6 +56,9 @@ class CampaignOut(BaseModel):
     calling_window_json: dict = Field(default_factory=dict)
     caller_id_override: str | None = None; max_concurrent_calls_override: int | None = None
     dtmf_queue_extension_override: str | None = None
+    gateway_lines: list[int] = Field(
+        default_factory=list, validation_alias=AliasChoices("gateway_lines_json", "gateway_lines"),
+    )
     model_config = {"from_attributes": True}
 
 
@@ -188,6 +225,7 @@ class LiveCallOut(BaseModel):
     phone: str
     started_at: datetime | None
     elapsed_seconds: int = 0
+    gateway_line: int | None = None
 
 
 class CampaignLiveStatusOut(BaseModel):
@@ -199,6 +237,8 @@ class CampaignLiveStatusOut(BaseModel):
     completed_today: int
     failed_today: int
     live_calls: list[LiveCallOut] = Field(default_factory=list)
+    gateway_lines: list[int] = Field(default_factory=list)
+    waiting_reason: str | None = None
 
 
 class LiveStatusOut(BaseModel):
@@ -221,6 +261,7 @@ class CallListItemOut(BaseModel):
     failure_reason: str | None = None; attempt_number: int = 1; scheduled_for: datetime | None = None
     started_at: datetime | None = None; completed_at: datetime | None = None
     recording_available: bool = False
+    gateway_line: int | None = None; gateway_prefix: str | None = None
     model_config = {"from_attributes": True}
 
 
