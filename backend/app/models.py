@@ -9,7 +9,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer,
-    JSON, String, Text, UniqueConstraint, func,
+    JSON, String, Text, UniqueConstraint, func, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -171,6 +171,9 @@ class Campaign(TimestampMixin, Base):
     caller_id_override: Mapped[str | None] = mapped_column(String(80))
     max_concurrent_calls_override: Mapped[int | None] = mapped_column(Integer)
     dtmf_queue_extension_override: Mapped[str | None] = mapped_column(String(20))
+    # Gateway line numbers (1–32) this campaign may dial from, rotated in order.
+    # Empty means the standard 3CX route with no gateway prefix.
+    gateway_lines_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     calls: Mapped[list["Call"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
     prompt: Mapped["Prompt | None"] = relationship()
@@ -196,6 +199,12 @@ class Call(TimestampMixin, Base):
         CheckConstraint("duration_seconds IS NULL OR duration_seconds >= 0", name="ck_calls_nonnegative_duration"),
         Index("ix_calls_campaign_status_created", "campaign_id", "status", "created_at"),
         Index("ix_calls_campaign_outcome", "campaign_id", "outcome"),
+        # The database guarantees one live call per gateway line.
+        Index(
+            "uq_calls_active_gateway_line", "gateway_line", unique=True,
+            postgresql_where=text("status = 'in_progress' AND gateway_line IS NOT NULL"),
+            sqlite_where=text("status = 'in_progress' AND gateway_line IS NOT NULL"),
+        ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     previous_attempt_id: Mapped[int | None] = mapped_column(ForeignKey("calls.id", ondelete="RESTRICT"), unique=True)
@@ -228,6 +237,9 @@ class Call(TimestampMixin, Base):
     dtmf_events_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     routed_destination: Mapped[str | None] = mapped_column(String(20))
     routing_status: Mapped[str | None] = mapped_column(String(40))
+    # The gateway line and dial prefix this attempt actually used (None = standard route).
+    gateway_line: Mapped[int | None] = mapped_column(Integer, index=True)
+    gateway_prefix: Mapped[str | None] = mapped_column(String(8))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     configuration_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
@@ -280,6 +292,17 @@ class GlobalSettings(TimestampMixin, Base):
     dtmf_routes_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     test_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     live_campaign_calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class GatewayLine(TimestampMixin, Base):
+    """One SIM channel on the Dinstar gateway, reached by dialling its prefix."""
+    __tablename__ = "gateway_lines"
+    __table_args__ = (CheckConstraint("number BETWEEN 1 AND 32", name="ck_gateway_lines_number"),)
+    number: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    prefix: Mapped[str] = mapped_column(String(8), unique=True, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(80))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AudioAsset(TimestampMixin, Base):

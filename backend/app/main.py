@@ -23,13 +23,14 @@ from .dtmf_routing import (
     sync_legacy_dtmf_fields,
 )
 from .models import (AgentNotification, AudioAsset, AudioAssetStatus, AuthSession, Call, CallStatus, Campaign, CampaignStatus,
-                     GlobalSettings, Playbook, PlaybookStatus, PlaybookVersion, User)
+                     GatewayLine, GlobalSettings, Playbook, PlaybookStatus, PlaybookVersion, User)
 from .schemas import (AudioAssetOut, CallListItemOut, CallOut, CampaignCreate, CampaignOut, Contact, ContactUploadResult, DtmfDiagnosticOut,
                       ForwardChainDiagnosticOut, HoldThenStreamDiagnosticOut,
                       GlobalSettingsOut, GlobalSettingsUpdate, LiveStatusOut, OutcomeUpdate, PlaybookCreate,
                       PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, SentimentUpdate, TestCallRequest,
                       ThreeCXDirectoryOut, CurrentUserOut, LoginOut, LoginRequest, PasswordChangeRequest, AdminUserCreate, AdminUserOut,
-                      ThreeCXLinkUpdate, AdminUserAccessUpdate, AgentNotificationOut)
+                      ThreeCXLinkUpdate, AdminUserAccessUpdate, AgentNotificationOut,
+                      CampaignGatewayLinesUpdate, GatewayLineOut, GatewayLineUpdate)
 from .auth import SESSION_COOKIE, create_session, current_session, current_user, hash_password, require_csrf, require_roles, verify_password
 from .services import analyze_sentiment, daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
@@ -38,6 +39,7 @@ from .notifications import ensure_diagnostic_routing_notification, record_diagno
 from .recording_sync import RecordingSync
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
+from .gateway_lines import describe_lines, ensure_gateway_lines
 from .transcript_sync import TranscriptSync
 from .ghost_monitor import GhostCallMonitor
 
@@ -98,7 +100,9 @@ def _call_snapshot(campaign: Campaign, db: Session) -> dict:
                      "caller_id": campaign.caller_id_override,
                      "max_concurrent_calls": campaign.max_concurrent_calls_override,
                      "dtmf_queue_extension_override": campaign.dtmf_queue_extension_override,
-                     "dtmf_queue_extension": campaign.dtmf_queue_extension_override or global_settings.dtmf_queue_extension},
+                     "dtmf_queue_extension": campaign.dtmf_queue_extension_override or global_settings.dtmf_queue_extension,
+                     # Audit only: dialling reads the campaign's current lines.
+                     "gateway_lines": list(campaign.gateway_lines_json or [])},
         "playbook": None if playbook is None else {"id": playbook.playbook_id, "name": playbook.playbook.name, "version_id": playbook.id,
                      "version": playbook.version, "script": playbook.script, "opening_audio_id": playbook.opening_audio_id,
                      "recording_enabled": playbook.recording_enabled},
@@ -885,9 +889,63 @@ def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
         raise HTTPException(422, "Campaign call limit cannot exceed the system limit")
     values["timezone"] = values["timezone"] or settings.default_timezone
     values["calling_window_json"] = values["calling_window_json"] if values["calling_window_json"] is not None else settings.default_calling_window_json
+    values["gateway_lines_json"] = _active_gateway_lines(values.pop("gateway_lines"), db)
     campaign = Campaign(**values)
     db.add(campaign); db.commit(); db.refresh(campaign)
     return campaign
+
+
+def _active_gateway_lines(numbers: list[int], db: Session) -> list[int]:
+    """Only lines switched on in Settings may be chosen for a campaign."""
+    if not numbers:
+        return []
+    ensure_gateway_lines(db)
+    enabled = set(db.scalars(select(GatewayLine.number).where(
+        GatewayLine.number.in_(numbers), GatewayLine.enabled.is_(True)
+    )).all())
+    inactive = [number for number in numbers if number not in enabled]
+    if inactive:
+        names = ", ".join(str(number) for number in inactive)
+        raise HTTPException(422, f"Line {names} is switched off in Settings" if len(inactive) == 1
+                            else f"Lines {names} are switched off in Settings")
+    return numbers
+
+
+@app.put("/campaigns/{campaign_id}/gateway-lines", response_model=CampaignOut,
+         dependencies=[Depends(require_roles("owner", "supervisor")), Depends(require_csrf)])
+def update_campaign_gateway_lines(campaign_id: int, payload: CampaignGatewayLinesUpdate, db: Session = Depends(get_db)):
+    """Lines are operational, not part of the frozen playbook, so a paused campaign may change them."""
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign: raise HTTPException(404, "Campaign not found")
+    if campaign.status == CampaignStatus.active:
+        raise HTTPException(409, "Pause this campaign before changing its lines")
+    if campaign.status in (CampaignStatus.completed, CampaignStatus.archived):
+        raise HTTPException(409, "Completed or archived campaigns cannot be changed")
+    campaign.gateway_lines_json = _active_gateway_lines(payload.gateway_lines, db)
+    db.commit(); db.refresh(campaign)
+    return campaign
+
+
+@app.get("/gateway-lines", response_model=list[GatewayLineOut], dependencies=[Depends(current_user)])
+def list_gateway_lines(db: Session = Depends(get_db)):
+    lines = describe_lines(db, _global_settings(db).default_timezone)
+    db.commit()
+    return lines
+
+
+@app.put("/gateway-lines", response_model=list[GatewayLineOut],
+         dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
+def update_gateway_lines(payload: list[GatewayLineUpdate], db: Session = Depends(get_db)):
+    """Owner switches lines on/off and labels them. Prefixes are fixed by the gateway setup."""
+    ensure_gateway_lines(db)
+    for update in payload:
+        line = db.get(GatewayLine, update.number)
+        line.enabled = update.enabled
+        line.label = (update.label or "").strip() or None
+    db.commit()
+    lines = describe_lines(db, _global_settings(db).default_timezone)
+    db.commit()
+    return lines
 
 
 @app.get("/campaigns", response_model=list[CampaignOut], dependencies=[Depends(current_user)])

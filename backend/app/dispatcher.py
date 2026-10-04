@@ -10,11 +10,13 @@ import time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
 from .database import SessionLocal
 from .dtmf_routing import resolve_dtmf_destination
+from .gateway_lines import allocate_line, campaign_line_numbers, dial_destination, free_lines
 from .models import AudioAssetStatus, Call, CallStatus, Campaign, CampaignStatus, GlobalSettings, PlaybookStatus
 from .threecx import ThreeCXClient, ThreeCXError
 from .notifications import ensure_routing_notification
@@ -87,6 +89,9 @@ def _is_dispatchable(campaign: Campaign, db: Session, settings: Settings) -> boo
     if not audio or audio.status != AudioAssetStatus.ready:
         return False
     if not (Path(settings.audio_storage_dir) / audio.storage_key).is_file():
+        return False
+    if campaign_line_numbers(campaign) and not free_lines(db, campaign):
+        # Every selected gateway line is busy or switched off: wait, never fall back to no prefix.
         return False
     return bool(db.scalar(select(Call.id).where(
         Call.campaign_id == campaign.id, Call.status == CallStatus.queued, _eligible_queue_clause()
@@ -177,14 +182,28 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
     ).order_by(Call.scheduled_for, Call.created_at, Call.id).limit(1).with_for_update(skip_locked=True))
     if not call:
         raise DispatchError("There are no queued contacts left in this campaign")
+    line = None
+    if campaign_line_numbers(campaign):
+        line = allocate_line(db, campaign)
+        if line is None:
+            db.rollback()
+            raise DispatchError("All of this campaign's gateway lines are busy or switched off")
+        call.gateway_line = line.number
+        call.gateway_prefix = line.prefix
+    destination = dial_destination(call.phone, line)
     call.status = CallStatus.in_progress
     call.started_at = datetime.now(timezone.utc)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # Another worker took this line at the same moment; the call stays queued.
+        db.rollback()
+        raise DispatchError("That gateway line was just taken by another call") from exc
 
     started = time.monotonic(); client = None; provider_call = None
     try:
         client = ThreeCXClient(settings)
-        provider_call = client.start_test_call(call.phone)
+        provider_call = client.start_test_call(destination)
         call.provider_call_id = str(provider_call.participant_id)
         db.commit()
         client.wait_until_connected(provider_call)
@@ -324,7 +343,10 @@ class CampaignDispatcher:
                         Call.campaign_id == campaign.id, Call.status == CallStatus.in_progress
                     )) or 0
                     campaign_limit = campaign.max_concurrent_calls_override or global_settings.max_concurrent_calls
-                    for _ in range(min(slots, max(0, campaign_limit - campaign_active))):
+                    spawn = min(slots, max(0, campaign_limit - campaign_active))
+                    if campaign_line_numbers(campaign):
+                        spawn = min(spawn, len(free_lines(db, campaign)))
+                    for _ in range(spawn):
                         worker = threading.Thread(target=self._execute, args=(campaign.id,), daemon=True)
                         with self.lock:
                             self.workers = {item for item in self.workers if item.is_alive()}
