@@ -53,6 +53,16 @@ class SchemaTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "alembic" / "versions" / "b7c41e9d2a60_add_gateway_sim_status.py").read_text()
         self.assertIn('down_revision = "a3e6c0d54f21"', source)
 
+    def test_line_cooloff_schema_and_migration(self):
+        from pathlib import Path
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        inspector = inspect(engine)
+        self.assertIn("line_cooloff_seconds", {c["name"] for c in inspector.get_columns("global_settings")})
+        self.assertIn("line_cooloff_seconds_override", {c["name"] for c in inspector.get_columns("campaigns")})
+        source = (Path(__file__).resolve().parents[1] / "alembic" / "versions" / "c8e2a5f19b37_add_line_cooloff.py").read_text()
+        self.assertIn('down_revision = "b7c41e9d2a60"', source)
+
     def test_callout_exposes_dtmf_events_history(self):
         call = SimpleNamespace(
             id=1, campaign_id=1, phone="+15551234567", prospect_name=None,

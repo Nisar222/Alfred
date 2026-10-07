@@ -13,7 +13,7 @@ campaign dialog, campaign start, "Check SIMs now"), never on a timer.  If the
 latest check failed, or none has run yet, every gateway line is paused until a
 check succeeds (fail closed).
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -51,6 +51,38 @@ def _dialable_lines_query(numbers: list[int], gate: str):
     if gate == "ok":
         query = query.where(GatewayLine.sim_registration == REGISTERED)
     return query.order_by(GatewayLine.last_used_at.asc().nulls_first(), GatewayLine.number)
+
+
+def global_cooloff_seconds(db: Session) -> int:
+    row = db.get(GlobalSettings, 1)
+    return max(0, int(row.line_cooloff_seconds or 0)) if row else 0
+
+
+def effective_cooloff_seconds(db: Session, campaign: Campaign) -> int:
+    """The campaign's own rest time if set, otherwise the Settings default."""
+    override = campaign.line_cooloff_seconds_override
+    return max(0, int(override)) if override is not None else global_cooloff_seconds(db)
+
+
+def resting_line_numbers(db: Session, cooloff_seconds: int) -> dict[int, datetime]:
+    """Lines whose last call (any outcome) ended less than ``cooloff_seconds`` ago → when they are free.
+
+    Derived from ``calls.completed_at`` so a restart or stale-call recovery needs no extra state.
+    """
+    if cooloff_seconds <= 0:
+        return {}
+    now = datetime.now(timezone.utc)
+    rest = timedelta(seconds=cooloff_seconds)
+    resting: dict[int, datetime] = {}
+    for number, ended in db.execute(
+        select(Call.gateway_line, func.max(Call.completed_at))
+        .where(Call.gateway_line.is_not(None), Call.completed_at.is_not(None))
+        .group_by(Call.gateway_line)
+    ).all():
+        free_at = _aware(ended) + rest
+        if free_at > now:
+            resting[number] = free_at
+    return resting
 
 
 def default_prefix(number: int) -> str:
@@ -100,16 +132,30 @@ def free_lines(db: Session, campaign: Campaign, settings: Settings | None = None
     gate = sim_gate(db, settings)
     if not numbers or gate == "error":
         return []
-    busy = busy_line_numbers(db)
+    unavailable = busy_line_numbers(db) | set(resting_line_numbers(db, effective_cooloff_seconds(db, campaign)))
     lines = db.scalars(_dialable_lines_query(numbers, gate)).all()
-    return [line for line in lines if line.number not in busy]
+    return [line for line in lines if line.number not in unavailable]
+
+
+def next_line_free_at(db: Session, campaign: Campaign, settings: Settings | None = None) -> datetime | None:
+    """When the first of this campaign's otherwise-usable lines finishes resting (None if none is resting)."""
+    numbers = campaign_line_numbers(campaign)
+    gate = sim_gate(db, settings)
+    if not numbers or gate == "error":
+        return None
+    resting = resting_line_numbers(db, effective_cooloff_seconds(db, campaign))
+    busy = busy_line_numbers(db)
+    usable = [line.number for line in db.scalars(_dialable_lines_query(numbers, gate)).all() if line.number not in busy]
+    times = [resting[number] for number in usable if number in resting]
+    return min(times) if times else None
 
 
 def allocate_line(db: Session, campaign: Campaign, settings: Settings | None = None) -> GatewayLine | None:
     """Reserve the least recently used free line for this campaign.
 
     Least-recently-used order gives the 8801 → 8832 → 8801 rotation and skips
-    busy, switched-off, and (when SIM checks are on) unregistered lines.
+    busy, switched-off, resting (cool-off), and (when SIM checks are on)
+    unregistered lines.
     PostgreSQL row locks stop two workers taking the same line; the caller
     must assign it to a call in the same commit.
     """
@@ -120,9 +166,12 @@ def allocate_line(db: Session, campaign: Campaign, settings: Settings | None = N
     busy = select(Call.gateway_line).where(
         Call.status == CallStatus.in_progress, Call.gateway_line.is_not(None)
     )
+    query = _dialable_lines_query(numbers, gate).where(GatewayLine.number.not_in(busy))
+    resting = resting_line_numbers(db, effective_cooloff_seconds(db, campaign))
+    if resting:
+        query = query.where(GatewayLine.number.not_in(list(resting)))
     # PostgreSQL locks the chosen line row; SQLite ignores the clause for local tests.
-    line = db.scalar(_dialable_lines_query(numbers, gate).where(GatewayLine.number.not_in(busy))
-                     .limit(1).with_for_update(skip_locked=True))
+    line = db.scalar(query.limit(1).with_for_update(skip_locked=True))
     if line:
         line.last_used_at = datetime.now(timezone.utc)
     return line
@@ -154,6 +203,7 @@ def describe_lines(db: Session, tz_name: str = "Asia/Dubai", settings: Settings 
     """Every line with its live status and today's usage, for Settings and the campaign picker."""
     ensure_gateway_lines(db)
     gate = sim_gate(db, settings)
+    resting = resting_line_numbers(db, global_cooloff_seconds(db))
     start = _start_of_local_day(tz_name)
     busy = busy_line_numbers(db)
     counts: dict[tuple[int, CallStatus], int] = {
@@ -175,6 +225,8 @@ def describe_lines(db: Session, tz_name: str = "Asia/Dubai", settings: Settings 
             status = "sim_unknown"
         elif sim_status == "not_ready":
             status = "sim_not_ready"
+        elif line.number in resting:
+            status = "resting"
         elif attention:
             status = "attention"
         else:
@@ -189,6 +241,7 @@ def describe_lines(db: Session, tz_name: str = "Asia/Dubai", settings: Settings 
             "answered_today": completed, "failed_today": failed,
             "sim_status": sim_status, "sim_registration": line.sim_registration,
             "sim_signal": line.sim_signal, "sim_checked_at": _aware(line.sim_checked_at),
+            "resting_until": resting.get(line.number) if line.enabled else None,
         })
     return described
 

@@ -101,8 +101,10 @@ def _call_snapshot(campaign: Campaign, db: Session) -> dict:
                      "max_concurrent_calls": campaign.max_concurrent_calls_override,
                      "dtmf_queue_extension_override": campaign.dtmf_queue_extension_override,
                      "dtmf_queue_extension": campaign.dtmf_queue_extension_override or global_settings.dtmf_queue_extension,
-                     # Audit only: dialling reads the campaign's current lines.
-                     "gateway_lines": list(campaign.gateway_lines_json or [])},
+                     # Audit only: dialling reads the campaign's current lines and rest time.
+                     "gateway_lines": list(campaign.gateway_lines_json or []),
+                     "line_cooloff_seconds": campaign.line_cooloff_seconds_override
+                     if campaign.line_cooloff_seconds_override is not None else global_settings.line_cooloff_seconds},
         "playbook": None if playbook is None else {"id": playbook.playbook_id, "name": playbook.playbook.name, "version_id": playbook.id,
                      "version": playbook.version, "script": playbook.script, "opening_audio_id": playbook.opening_audio_id,
                      "recording_enabled": playbook.recording_enabled},
@@ -922,6 +924,8 @@ def update_campaign_gateway_lines(campaign_id: int, payload: CampaignGatewayLine
     if campaign.status in (CampaignStatus.completed, CampaignStatus.archived):
         raise HTTPException(409, "Completed or archived campaigns cannot be changed")
     campaign.gateway_lines_json = _active_gateway_lines(payload.gateway_lines, db)
+    if "line_cooloff_seconds_override" in payload.model_fields_set:
+        campaign.line_cooloff_seconds_override = payload.line_cooloff_seconds_override
     db.commit(); db.refresh(campaign)
     return campaign
 
