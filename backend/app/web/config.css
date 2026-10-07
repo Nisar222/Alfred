@@ -21,3 +21,9 @@
 .campaign-list{grid-template-columns:minmax(0,1fr)}.campaign-row .actions{flex-wrap:wrap;min-width:0;max-width:100%}
 .live-status-copy .live-status-lines{display:flex;flex-wrap:wrap;gap:6px}.live-status-copy .live-status-lines[hidden]{display:none}.live-status-copy .live-line-chip{display:inline-block;width:auto}.campaign-row .campaign-lines{text-transform:none}
 .live-status-copy .live-status-lines,.live-status-copy .live-line-chip{-webkit-line-clamp:unset;overflow:visible;color:#fff}
+.sim-check-status{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid #dce5df;background:#fbfcfb;color:#4d5f5a}.sim-check-status.ok{background:#f1f8f4;border-color:#cfe6dc;color:#0e5148}.sim-check-status.error{background:#fde8e4;border-color:#f3c3b8;color:#7d2a1b}.sim-check-status .quiet-button{min-height:40px;background:#fff}
+.gateway-table{min-width:990px}.gateway-row{grid-template-columns:80px 64px minmax(160px,1.4fr) 150px 120px 60px 80px 60px 70px}
+.sim-pill{justify-self:start;border-radius:999px;padding:4px 10px;font-size:12px;font-weight:700;white-space:nowrap}.sim-pill.good{background:#dff3eb;color:#0e5148}.sim-pill.weak{background:#fff0d5;color:#6b4400}.sim-pill.bad{background:#fde8e4;color:#9a3412}.sim-pill.unknown{background:#eef1ef;color:#4d5f5a}.sim-pill.off{color:#667b76;padding-left:0}
+.gateway-status.sim_not_ready{background:#fde8e4;color:#9a3412}.gateway-status.sim_unknown{background:#eef1ef;color:#4d5f5a}
+.line-chip{position:relative}.line-chip.sim-warn{border-style:dashed;border-color:#d9a493}.line-chip .sim-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;background:#c2410c}.line-chip.selected.sim-warn{border-style:dashed;border-color:#f3c3b8}
+.live-status-bar.is-error{background:linear-gradient(90deg,#8f2d1d,#a8402b)}

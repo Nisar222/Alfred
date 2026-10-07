@@ -65,6 +65,12 @@ services:
       WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-base}
       WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      # Dinstar gateway SIM status. Values live only in .env; empty turns SIM checks off.
+      DINSTAR_BASE_URL: ${DINSTAR_BASE_URL:-}
+      DINSTAR_API_USERNAME: ${DINSTAR_API_USERNAME:-}
+      DINSTAR_API_PASSWORD: ${DINSTAR_API_PASSWORD:-}
+      DINSTAR_VERIFY_TLS: ${DINSTAR_VERIFY_TLS:-true}
+      DINSTAR_TIMEOUT_SECONDS: ${DINSTAR_TIMEOUT_SECONDS:-5}
     volumes:
       # The operator's one controlled test message is mounted as a single
       # read-only file. Browser uploads live in a separate local Docker

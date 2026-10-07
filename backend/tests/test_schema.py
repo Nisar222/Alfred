@@ -41,6 +41,18 @@ class SchemaTests(unittest.TestCase):
         self.assertIn('f"88{number:02d}"', source)
         self.assertIn("range(1, 33)", source)
 
+    def test_sim_status_schema_and_migration(self):
+        from pathlib import Path
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        inspector = inspect(engine)
+        line_columns = {column["name"] for column in inspector.get_columns("gateway_lines")}
+        self.assertTrue({"sim_registration", "sim_signal", "sim_checked_at"} <= line_columns)
+        settings_columns = {column["name"] for column in inspector.get_columns("global_settings")}
+        self.assertTrue({"sim_check_last_attempt_at", "sim_check_last_success_at", "sim_check_error"} <= settings_columns)
+        source = (Path(__file__).resolve().parents[1] / "alembic" / "versions" / "b7c41e9d2a60_add_gateway_sim_status.py").read_text()
+        self.assertIn('down_revision = "a3e6c0d54f21"', source)
+
     def test_callout_exposes_dtmf_events_history(self):
         call = SimpleNamespace(
             id=1, campaign_id=1, phone="+15551234567", prospect_name=None,

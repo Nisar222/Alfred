@@ -30,7 +30,7 @@ from .schemas import (AudioAssetOut, CallListItemOut, CallOut, CampaignCreate, C
                       PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, SentimentUpdate, TestCallRequest,
                       ThreeCXDirectoryOut, CurrentUserOut, LoginOut, LoginRequest, PasswordChangeRequest, AdminUserCreate, AdminUserOut,
                       ThreeCXLinkUpdate, AdminUserAccessUpdate, AgentNotificationOut,
-                      CampaignGatewayLinesUpdate, GatewayLineOut, GatewayLineUpdate)
+                      CampaignGatewayLinesUpdate, GatewayLineOut, GatewayLineUpdate, SimCheckOut)
 from .auth import SESSION_COOKIE, create_session, current_session, current_user, hash_password, require_csrf, require_roles, verify_password
 from .services import analyze_sentiment, daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
@@ -39,7 +39,7 @@ from .notifications import ensure_diagnostic_routing_notification, record_diagno
 from .recording_sync import RecordingSync
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
-from .gateway_lines import describe_lines, ensure_gateway_lines
+from .gateway_lines import check_sims, describe_lines, ensure_gateway_lines, sim_check_summary
 from .transcript_sync import TranscriptSync
 from .ghost_monitor import GhostCallMonitor
 
@@ -933,6 +933,21 @@ def list_gateway_lines(db: Session = Depends(get_db)):
     return lines
 
 
+@app.get("/gateway-lines/sim-check", response_model=SimCheckOut, dependencies=[Depends(current_user)])
+def get_sim_check(db: Session = Depends(get_db)):
+    return sim_check_summary(db)
+
+
+@app.post("/gateway-lines/check-sims", response_model=SimCheckOut,
+          dependencies=[Depends(require_roles("owner", "supervisor")), Depends(require_csrf)])
+def check_sims_now(db: Session = Depends(get_db)):
+    """Ask the gateway for every SIM's status right now (read-only on the gateway).
+
+    Called from Settings, the campaign dialog, and "Check SIMs now" — never on a timer.
+    """
+    return check_sims(db)
+
+
 @app.put("/gateway-lines", response_model=list[GatewayLineOut],
          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
 def update_gateway_lines(payload: list[GatewayLineUpdate], db: Session = Depends(get_db)):
@@ -965,7 +980,11 @@ def launch_campaign(campaign_id: int, db: Session = Depends(get_db)):
     if not campaign: raise HTTPException(404, "Campaign not found")
     if campaign.status in (CampaignStatus.completed, CampaignStatus.archived):
         raise HTTPException(409, "Completed or archived campaigns cannot be launched")
-    campaign.status = CampaignStatus.active; db.commit(); db.refresh(campaign)
+    campaign.status = CampaignStatus.active; db.commit()
+    if campaign.gateway_lines_json:
+        # Starting a gateway campaign refreshes SIM status once; a failure pauses its lines.
+        check_sims(db)
+    db.refresh(campaign)
     return campaign
 
 

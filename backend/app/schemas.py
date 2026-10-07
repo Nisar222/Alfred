@@ -42,6 +42,14 @@ class GatewayLineOut(BaseModel):
     number: int; prefix: str; label: str | None = None; enabled: bool
     status: str; needs_attention: bool = False
     calls_today: int = 0; answered_today: int = 0; failed_today: int = 0
+    sim_status: str = "off"; sim_registration: str | None = None
+    sim_signal: int | None = None; sim_checked_at: datetime | None = None
+
+
+class SimCheckOut(BaseModel):
+    enabled: bool; state: str; error: str | None = None
+    last_attempt_at: datetime | None = None; last_success_at: datetime | None = None
+    ready_lines: int = 0
 
 
 class GatewayLineUpdate(BaseModel):

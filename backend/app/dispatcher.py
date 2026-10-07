@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from .config import Settings, get_settings
 from .database import SessionLocal
 from .dtmf_routing import resolve_dtmf_destination
-from .gateway_lines import allocate_line, campaign_line_numbers, dial_destination, free_lines
+from .gateway_lines import GATEWAY_UNREACHABLE, allocate_line, campaign_line_numbers, dial_destination, free_lines, sim_gate
 from .models import AudioAssetStatus, Call, CallStatus, Campaign, CampaignStatus, GlobalSettings, PlaybookStatus
 from .threecx import ThreeCXClient, ThreeCXError
 from .notifications import ensure_routing_notification
@@ -90,7 +90,7 @@ def _is_dispatchable(campaign: Campaign, db: Session, settings: Settings) -> boo
         return False
     if not (Path(settings.audio_storage_dir) / audio.storage_key).is_file():
         return False
-    if campaign_line_numbers(campaign) and not free_lines(db, campaign):
+    if campaign_line_numbers(campaign) and not free_lines(db, campaign, settings):
         # Every selected gateway line is busy or switched off: wait, never fall back to no prefix.
         return False
     return bool(db.scalar(select(Call.id).where(
@@ -184,10 +184,13 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
         raise DispatchError("There are no queued contacts left in this campaign")
     line = None
     if campaign_line_numbers(campaign):
-        line = allocate_line(db, campaign)
+        line = allocate_line(db, campaign, settings)
         if line is None:
+            gateway_down = sim_gate(db, settings) == "error"
             db.rollback()
-            raise DispatchError("All of this campaign's gateway lines are busy or switched off")
+            if gateway_down:
+                raise DispatchError(f"{GATEWAY_UNREACHABLE}; gateway lines are paused")
+            raise DispatchError("All of this campaign's gateway lines are busy, switched off, or have no ready SIM")
         call.gateway_line = line.number
         call.gateway_prefix = line.prefix
     destination = dial_destination(call.phone, line)
@@ -345,7 +348,7 @@ class CampaignDispatcher:
                     campaign_limit = campaign.max_concurrent_calls_override or global_settings.max_concurrent_calls
                     spawn = min(slots, max(0, campaign_limit - campaign_active))
                     if campaign_line_numbers(campaign):
-                        spawn = min(spawn, len(free_lines(db, campaign)))
+                        spawn = min(spawn, len(free_lines(db, campaign, settings)))
                     for _ in range(spawn):
                         worker = threading.Thread(target=self._execute, args=(campaign.id,), daemon=True)
                         with self.lock:

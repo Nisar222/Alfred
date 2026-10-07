@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
     whisper_beam_size: int = 3
+    # Dinstar gateway HTTP API for live SIM status (reached privately over Tailscale).
+    # Leave the URL, username or password empty to turn SIM checks off.
+    dinstar_base_url: str = ""
+    dinstar_api_username: str = ""
+    dinstar_api_password: str = ""
+    dinstar_verify_tls: bool = True
+    dinstar_timeout_seconds: float = 5.0
+
+    @property
+    def dinstar_configured(self) -> bool:
+        return bool(self.dinstar_base_url and self.dinstar_api_username and self.dinstar_api_password)
 
 
 @lru_cache

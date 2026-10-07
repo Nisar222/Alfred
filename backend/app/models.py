@@ -292,6 +292,10 @@ class GlobalSettings(TimestampMixin, Base):
     dtmf_routes_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     test_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     live_campaign_calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Outcome of the background gateway SIM check; an error pauses every gateway line.
+    sim_check_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sim_check_last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sim_check_error: Mapped[str | None] = mapped_column(Text)
 
 
 class GatewayLine(TimestampMixin, Base):
@@ -303,6 +307,10 @@ class GatewayLine(TimestampMixin, Base):
     label: Mapped[str | None] = mapped_column(String(80))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last SIM status read from the gateway API (REGISTER_OK = ready to dial).
+    sim_registration: Mapped[str | None] = mapped_column(String(40))
+    sim_signal: Mapped[int | None] = mapped_column(Integer)
+    sim_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AudioAsset(TimestampMixin, Base):
