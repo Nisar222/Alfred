@@ -190,7 +190,7 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
             db.rollback()
             if gateway_down:
                 raise DispatchError(f"{GATEWAY_UNREACHABLE}; gateway lines are paused")
-            raise DispatchError("All of this campaign's gateway lines are busy, switched off, or have no ready SIM")
+            raise DispatchError("All of this campaign's gateway lines are busy, resting, switched off, or have no ready SIM")
         call.gateway_line = line.number
         call.gateway_prefix = line.prefix
     destination = dial_destination(call.phone, line)

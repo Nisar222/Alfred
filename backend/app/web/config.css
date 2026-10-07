@@ -27,3 +27,4 @@
 .gateway-status.sim_not_ready{background:#fde8e4;color:#9a3412}.gateway-status.sim_unknown{background:#eef1ef;color:#4d5f5a}
 .line-chip{position:relative}.line-chip.sim-warn{border-style:dashed;border-color:#d9a493}.line-chip .sim-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;background:#c2410c}.line-chip.selected.sim-warn{border-style:dashed;border-color:#f3c3b8}
 .live-status-bar.is-error{background:linear-gradient(90deg,#8f2d1d,#a8402b)}
+.cooloff-pair input{max-width:110px}.cooloff-override{display:grid;gap:6px;font-weight:700;font-size:14px}.cooloff-override small{font-weight:500}.gateway-status.resting{background:#e9eef8;color:#2f4b80}

@@ -16,6 +16,8 @@ class CampaignCreate(BaseModel):
     dtmf_queue_extension_override: str | None = Field(default=None, pattern=r"^\d{2,10}$")
     # Gateway lines (1–32) to rotate through; empty uses the standard route with no prefix.
     gateway_lines: list[int] = Field(default_factory=list, max_length=32)
+    # Seconds each line rests after a call before this campaign uses it again; None = Settings default.
+    line_cooloff_seconds_override: int | None = Field(default=None, ge=0, le=86400)
 
     @field_validator("gateway_lines")
     @classmethod
@@ -31,6 +33,7 @@ def _gateway_line_numbers(value: list[int]) -> list[int]:
 
 class CampaignGatewayLinesUpdate(BaseModel):
     gateway_lines: list[int] = Field(default_factory=list, max_length=32)
+    line_cooloff_seconds_override: int | None = Field(default=None, ge=0, le=86400)
 
     @field_validator("gateway_lines")
     @classmethod
@@ -40,7 +43,7 @@ class CampaignGatewayLinesUpdate(BaseModel):
 
 class GatewayLineOut(BaseModel):
     number: int; prefix: str; label: str | None = None; enabled: bool
-    status: str; needs_attention: bool = False
+    status: str; needs_attention: bool = False; resting_until: datetime | None = None
     calls_today: int = 0; answered_today: int = 0; failed_today: int = 0
     sim_status: str = "off"; sim_registration: str | None = None
     sim_signal: int | None = None; sim_checked_at: datetime | None = None
@@ -67,6 +70,7 @@ class CampaignOut(BaseModel):
     gateway_lines: list[int] = Field(
         default_factory=list, validation_alias=AliasChoices("gateway_lines_json", "gateway_lines"),
     )
+    line_cooloff_seconds_override: int | None = None
     model_config = {"from_attributes": True}
 
 
@@ -247,6 +251,7 @@ class CampaignLiveStatusOut(BaseModel):
     live_calls: list[LiveCallOut] = Field(default_factory=list)
     gateway_lines: list[int] = Field(default_factory=list)
     waiting_reason: str | None = None
+    next_line_free_at: datetime | None = None
 
 
 class LiveStatusOut(BaseModel):
@@ -304,6 +309,7 @@ class GlobalSettingsUpdate(BaseModel):
     dtmf_routes_json: dict[str, str] = Field(default_factory=dict)
     test_call_enabled: bool = False
     live_campaign_calling_enabled: bool = False
+    line_cooloff_seconds: int = Field(default=0, ge=0, le=86400)
 
     @field_validator("dtmf_routes_json")
     @classmethod

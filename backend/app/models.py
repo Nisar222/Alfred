@@ -170,6 +170,9 @@ class Campaign(TimestampMixin, Base):
     playbook_version_id: Mapped[int | None] = mapped_column(ForeignKey("playbook_versions.id", ondelete="RESTRICT"), index=True)
     caller_id_override: Mapped[str | None] = mapped_column(String(80))
     max_concurrent_calls_override: Mapped[int | None] = mapped_column(Integer)
+    # Seconds a gateway line rests after a call before this campaign dials on it again;
+    # None uses the Settings default, 0 means no rest.
+    line_cooloff_seconds_override: Mapped[int | None] = mapped_column(Integer)
     dtmf_queue_extension_override: Mapped[str | None] = mapped_column(String(20))
     # Gateway line numbers (1–32) this campaign may dial from, rotated in order.
     # Empty means the standard 3CX route with no gateway prefix.
@@ -292,7 +295,9 @@ class GlobalSettings(TimestampMixin, Base):
     dtmf_routes_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     test_call_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     live_campaign_calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    # Outcome of the background gateway SIM check; an error pauses every gateway line.
+    # Seconds each gateway line rests after any call ends before its next call (0 = off).
+    line_cooloff_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Outcome of the latest gateway SIM check; an error pauses every gateway line.
     sim_check_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sim_check_last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sim_check_error: Mapped[str | None] = mapped_column(Text)
