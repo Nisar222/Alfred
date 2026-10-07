@@ -6,7 +6,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .gateway_lines import busy_line_numbers, campaign_line_numbers
+from .dinstar import REGISTERED
+from .gateway_lines import GATEWAY_UNREACHABLE, busy_line_numbers, campaign_line_numbers, sim_gate
 from .models import Call, CallStatus, Campaign, CampaignStatus, GatewayLine, GlobalSettings
 
 
@@ -27,6 +28,9 @@ def live_campaign_status(db: Session) -> dict:
 
     busy_lines = busy_line_numbers(db)
     enabled_lines = set(db.scalars(select(GatewayLine.number).where(GatewayLine.enabled.is_(True))).all())
+    gate = sim_gate(db)
+    sim_ready_lines = set(db.scalars(select(GatewayLine.number).where(
+        GatewayLine.sim_registration == REGISTERED)).all()) if gate == "ok" else set()
 
     campaigns_out = []
     for campaign in active_campaigns:
@@ -34,7 +38,13 @@ def live_campaign_status(db: Session) -> dict:
         start_of_day = _start_of_local_day(tz_name)
         line_limit = campaign.max_concurrent_calls_override or max_global
         gateway_lines = campaign_line_numbers(campaign)
-        usable_lines = [number for number in gateway_lines if number in enabled_lines]
+        switched_on = [number for number in gateway_lines if number in enabled_lines]
+        if gate == "error":
+            usable_lines = []
+        elif gate == "ok":
+            usable_lines = [number for number in switched_on if number in sim_ready_lines]
+        else:
+            usable_lines = switched_on
         if gateway_lines:
             line_limit = min(line_limit, len(usable_lines))
 
@@ -85,8 +95,12 @@ def live_campaign_status(db: Session) -> dict:
 
         lines_in_use = len(live_calls)
         waiting_reason = None
-        if gateway_lines and not usable_lines:
+        if gateway_lines and not switched_on:
             waiting_reason = "None of this campaign's lines are switched on"
+        elif gateway_lines and gate == "error":
+            waiting_reason = GATEWAY_UNREACHABLE
+        elif gateway_lines and not usable_lines:
+            waiting_reason = "None of this campaign's SIMs are ready"
         elif gateway_lines and queued and all(number in busy_lines for number in usable_lines):
             waiting_reason = "Waiting for a free line"
         campaigns_out.append(

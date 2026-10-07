@@ -30,7 +30,7 @@ from .schemas import (AudioAssetOut, CallListItemOut, CallOut, CampaignCreate, C
                       PlaybookOut, PlaybookVersionCreate, PlaybookVersionOut, SentimentUpdate, TestCallRequest,
                       ThreeCXDirectoryOut, CurrentUserOut, LoginOut, LoginRequest, PasswordChangeRequest, AdminUserCreate, AdminUserOut,
                       ThreeCXLinkUpdate, AdminUserAccessUpdate, AgentNotificationOut,
-                      CampaignGatewayLinesUpdate, GatewayLineOut, GatewayLineUpdate)
+                      CampaignGatewayLinesUpdate, GatewayLineOut, GatewayLineUpdate, SimCheckOut)
 from .auth import SESSION_COOKIE, create_session, current_session, current_user, hash_password, require_csrf, require_roles, verify_password
 from .services import analyze_sentiment, daily_metrics, score_call, simulate_call
 from .threecx import ThreeCXClient, ThreeCXError
@@ -39,9 +39,10 @@ from .notifications import ensure_diagnostic_routing_notification, record_diagno
 from .recording_sync import RecordingSync
 from .recordings import parse_threecx_recording_id, sync_threecx_recordings_safe
 from .live_status import live_campaign_status
-from .gateway_lines import describe_lines, ensure_gateway_lines
+from .gateway_lines import check_sims, describe_lines, ensure_gateway_lines, sim_check_summary
 from .transcript_sync import TranscriptSync
 from .ghost_monitor import GhostCallMonitor
+from .sim_sync import SimStatusSync
 
 
 @asynccontextmanager
@@ -51,10 +52,12 @@ async def lifespan(app: FastAPI):
     recording_sync = RecordingSync()
     transcript_sync = TranscriptSync()
     ghost_monitor = GhostCallMonitor()
+    sim_sync = SimStatusSync()
     dispatcher.start()
     recording_sync.start()
     transcript_sync.start()
     ghost_monitor.start()
+    sim_sync.start()
     settings = get_settings()
     if settings.call_provider == "threecx" and settings.recording_sync_enabled:
         with SessionLocal() as db:
@@ -62,6 +65,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        sim_sync.stop()
         ghost_monitor.stop()
         transcript_sync.stop()
         recording_sync.stop()
@@ -931,6 +935,18 @@ def list_gateway_lines(db: Session = Depends(get_db)):
     lines = describe_lines(db, _global_settings(db).default_timezone)
     db.commit()
     return lines
+
+
+@app.get("/gateway-lines/sim-check", response_model=SimCheckOut, dependencies=[Depends(current_user)])
+def get_sim_check(db: Session = Depends(get_db)):
+    return sim_check_summary(db)
+
+
+@app.post("/gateway-lines/check-sims", response_model=SimCheckOut,
+          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
+def check_sims_now(db: Session = Depends(get_db)):
+    """Owner asks the gateway for every SIM's status right now (read-only on the gateway)."""
+    return check_sims(db)
 
 
 @app.put("/gateway-lines", response_model=list[GatewayLineOut],
