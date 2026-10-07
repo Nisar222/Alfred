@@ -42,7 +42,6 @@ from .live_status import live_campaign_status
 from .gateway_lines import check_sims, describe_lines, ensure_gateway_lines, sim_check_summary
 from .transcript_sync import TranscriptSync
 from .ghost_monitor import GhostCallMonitor
-from .sim_sync import SimStatusSync
 
 
 @asynccontextmanager
@@ -52,12 +51,10 @@ async def lifespan(app: FastAPI):
     recording_sync = RecordingSync()
     transcript_sync = TranscriptSync()
     ghost_monitor = GhostCallMonitor()
-    sim_sync = SimStatusSync()
     dispatcher.start()
     recording_sync.start()
     transcript_sync.start()
     ghost_monitor.start()
-    sim_sync.start()
     settings = get_settings()
     if settings.call_provider == "threecx" and settings.recording_sync_enabled:
         with SessionLocal() as db:
@@ -65,7 +62,6 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        sim_sync.stop()
         ghost_monitor.stop()
         transcript_sync.stop()
         recording_sync.stop()
@@ -943,9 +939,12 @@ def get_sim_check(db: Session = Depends(get_db)):
 
 
 @app.post("/gateway-lines/check-sims", response_model=SimCheckOut,
-          dependencies=[Depends(require_roles("owner")), Depends(require_csrf)])
+          dependencies=[Depends(require_roles("owner", "supervisor")), Depends(require_csrf)])
 def check_sims_now(db: Session = Depends(get_db)):
-    """Owner asks the gateway for every SIM's status right now (read-only on the gateway)."""
+    """Ask the gateway for every SIM's status right now (read-only on the gateway).
+
+    Called from Settings, the campaign dialog, and "Check SIMs now" — never on a timer.
+    """
     return check_sims(db)
 
 
@@ -981,7 +980,11 @@ def launch_campaign(campaign_id: int, db: Session = Depends(get_db)):
     if not campaign: raise HTTPException(404, "Campaign not found")
     if campaign.status in (CampaignStatus.completed, CampaignStatus.archived):
         raise HTTPException(409, "Completed or archived campaigns cannot be launched")
-    campaign.status = CampaignStatus.active; db.commit(); db.refresh(campaign)
+    campaign.status = CampaignStatus.active; db.commit()
+    if campaign.gateway_lines_json:
+        # Starting a gateway campaign refreshes SIM status once; a failure pauses its lines.
+        check_sims(db)
+    db.refresh(campaign)
     return campaign
 
 

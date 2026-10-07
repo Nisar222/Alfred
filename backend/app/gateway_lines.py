@@ -7,11 +7,13 @@ standard 3CX route and dials the number unchanged.
 Whether a line is busy is derived from ``Call.status`` in PostgreSQL, so a
 restart or stale-call recovery frees lines without any in-memory state.
 
-When gateway SIM checks are set up, only lines whose SIM the gateway recently
-reported as registered are dialled.  If the gateway cannot be checked, every
-gateway line is paused until a check succeeds (fail closed).
+When gateway SIM checks are set up, only lines whose SIM the gateway reported
+as registered in the latest check are dialled.  Checks run on demand (Settings,
+campaign dialog, campaign start, "Check SIMs now"), never on a timer.  If the
+latest check failed, or none has run yet, every gateway line is paused until a
+check succeeds (fail closed).
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -23,8 +25,6 @@ from .models import Call, CallStatus, Campaign, GatewayLine, GlobalSettings
 
 LINE_COUNT = 32
 ATTENTION_FAILURES = 3
-# A SIM check older than this no longer counts; gateway lines pause until a fresh one.
-SIM_CHECK_STALE_AFTER = timedelta(seconds=120)
 GATEWAY_UNREACHABLE = "Can't reach the gateway to check SIMs"
 
 
@@ -35,15 +35,13 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def sim_gate(db: Session, settings: Settings | None = None) -> str:
-    """'off' when SIM checks are not set up, 'ok' after a fresh check, otherwise 'error'."""
+    """'off' when SIM checks are not set up, 'ok' after a successful check, 'error' otherwise."""
     settings = settings or get_settings()
     if not settings.dinstar_configured:
         return "off"
     row = db.get(GlobalSettings, 1)
     last_success = _aware(row.sim_check_last_success_at) if row else None
     if row is None or row.sim_check_error or last_success is None:
-        return "error"
-    if last_success < datetime.now(timezone.utc) - SIM_CHECK_STALE_AFTER:
         return "error"
     return "ok"
 
@@ -202,8 +200,7 @@ def sim_check_summary(db: Session, settings: Settings | None = None) -> dict:
     gate = sim_gate(db, settings)
     error = row.sim_check_error if row else None
     if gate == "error" and not error:
-        error = "No recent SIM check from the gateway yet" if not (row and row.sim_check_last_success_at) \
-            else "The last successful SIM check is too old"
+        error = "SIMs have not been checked yet"
     return {
         "enabled": settings.dinstar_configured, "state": gate, "error": error if gate == "error" else None,
         "last_attempt_at": _aware(row.sim_check_last_attempt_at) if row else None,

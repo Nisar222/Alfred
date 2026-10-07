@@ -137,15 +137,17 @@ class SimGatingTests(unittest.TestCase):
         self.check(all_ports())
         self.assertEqual(sim_gate(self.db, CONFIGURED), "ok")
 
-    def test_no_check_yet_or_stale_check_fails_closed(self):
+    def test_never_checked_fails_closed_but_an_old_successful_check_still_counts(self):
         self.assertEqual(sim_gate(self.db, CONFIGURED), "error")
+        self.assertIn("not been checked", sim_check_summary(self.db, CONFIGURED)["error"])
         self.assertIsNone(allocate_line(self.db, self.campaign, CONFIGURED))
         self.check(all_ports())
+        # Checks are on demand, so a result from hours ago stays in force until the next check.
         settings_row = self.db.get(GlobalSettings, 1)
-        settings_row.sim_check_last_success_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        settings_row.sim_check_last_success_at = datetime.now(timezone.utc) - timedelta(hours=6)
         self.db.commit()
-        self.assertEqual(sim_gate(self.db, CONFIGURED), "error")
-        self.assertIn("too old", sim_check_summary(self.db, CONFIGURED)["error"])
+        self.assertEqual(sim_gate(self.db, CONFIGURED), "ok")
+        self.assertEqual(allocate_line(self.db, self.campaign, CONFIGURED).number, 1)
 
     def test_switched_off_line_with_ready_sim_is_still_not_used(self):
         self.check(all_ports())
@@ -208,12 +210,14 @@ class SimStatusApiTests(unittest.TestCase):
             original(client_self, settings, transport=_fake)
         return patch.object(DinstarClient, "__init__", init)
 
-    def test_check_now_is_owner_only_with_csrf_and_reports_lines(self):
+    def test_check_now_needs_owner_or_supervisor_with_csrf_and_reports_lines(self):
         self.client.cookies.clear()
         self.assertEqual(self.client.get("/gateway-lines/sim-check").status_code, 401)
+        self.assertEqual(self.client.post("/gateway-lines/check-sims").status_code, 401)
         self.login("super@example.test")
         self.assertEqual(self.client.get("/gateway-lines/sim-check").status_code, 200)
-        self.assertEqual(self.client.post("/gateway-lines/check-sims").status_code, 403)
+        with self.fake_gateway():
+            self.assertEqual(self.client.post("/gateway-lines/check-sims").status_code, 200)
         self.login("owner@example.test")
         token = self.client.headers.pop("X-CSRF-Token")
         self.assertEqual(self.client.post("/gateway-lines/check-sims").status_code, 403)
@@ -227,6 +231,29 @@ class SimStatusApiTests(unittest.TestCase):
         self.assertEqual((lines[1]["sim_status"], lines[1]["sim_registration"], lines[1]["sim_signal"]),
                          ("not_ready", "UNREGISTER", 0))
         self.assertEqual((lines[2]["sim_status"], lines[2]["sim_signal"]), ("ready", 18))
+
+    def test_starting_a_gateway_campaign_checks_sims_once_and_standard_route_does_not(self):
+        calls = []
+        original = DinstarClient.sim_statuses
+
+        def counting(client_self, *args, **kwargs):
+            calls.append(1)
+            return original(client_self, *args, **kwargs)
+
+        gateway_id = self.client.post("/campaigns", json={"name": "Gw", "script": "Approved gateway script", "gateway_lines": [2]}).json()["id"]
+        standard_id = self.client.post("/campaigns", json={"name": "Std", "script": "Approved gateway script"}).json()["id"]
+        with self.fake_gateway(), patch.object(DinstarClient, "sim_statuses", counting):
+            self.assertEqual(self.client.post(f"/campaigns/{standard_id}/launch").status_code, 200)
+            self.assertEqual(len(calls), 0)
+            self.assertEqual(self.client.post(f"/campaigns/{gateway_id}/launch").status_code, 200)
+            self.assertEqual(len(calls), 1)
+        self.assertEqual(self.client.get("/gateway-lines/sim-check").json()["state"], "ok")
+
+    def test_nothing_polls_the_gateway_in_the_background(self):
+        import app.main as main_module
+        self.assertFalse(hasattr(main_module, "SimStatusSync"))
+        with self.assertRaises(ImportError):
+            __import__("app.sim_sync")
 
     def test_live_status_explains_paused_lines_and_standard_route_is_unaffected(self):
         gateway_campaign = self.client.post("/campaigns", json={"name": "Gateway", "script": "Approved gateway script", "gateway_lines": [1]}).json()["id"]
