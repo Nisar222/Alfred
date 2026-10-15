@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Jamal Dialler</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/config.css?v=20261007-2">
+  <title>Jamal Dialler</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/config.css?v=20261015-1">
 </head>
 <body>
   <header class="topbar">
@@ -102,5 +102,5 @@
   <dialog id="login-dialog"><form id="login-form"><p class="eyebrow">PRIVATE ALFRED ACCESS</p><h2>Sign in</h2><p class="dialog-intro">Use your Alfred email or 3CX extension. Your 3CX password is never used here.</p><label>Email or extension<input name="email" type="text" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><p id="login-error" class="form-error" role="alert"></p><div class="dialog-actions"><button class="primary-button" type="submit">Sign in <span>→</span></button></div></form></dialog>
   <dialog id="agent-dialog"><form id="agent-form"><button class="close" type="button" id="close-agent-dialog" aria-label="Close">×</button><p class="eyebrow">ALFRED TEAM</p><h2>Add an agent</h2><p class="dialog-intro">This creates Alfred access only. Link the matching 3CX extension after saving.</p><label>Name<input name="display_name" required maxlength="150"></label><label>Email<input name="email" type="email" autocomplete="off" required></label><label>Role<select name="role"><option value="agent">Agent</option><option value="supervisor">Supervisor</option></select></label><label>Temporary password<input name="password" type="password" autocomplete="new-password" minlength="12" required><small class="field-note">At least 12 characters. Share it privately and ask the agent to change it.</small></label><p id="agent-error" class="form-error" role="alert"></p><div class="dialog-actions"><button class="primary-button" type="submit">Create account <span>→</span></button></div></form></dialog>
   <aside id="agent-call-popup" class="agent-call-popup" hidden aria-live="assertive"><p class="eyebrow">ALFRED TRANSFER</p><h2>Incoming customer</h2><strong id="popup-customer"></strong><p id="popup-context"></p><p id="popup-menu"></p><button id="popup-open" class="primary-button" type="button">Open call details</button><button id="popup-dismiss" class="quiet-button" type="button">Dismiss</button></aside>
-  <script src="/app.js?v=20261007-2"></script>
+  <script src="/app.js?v=20261015-1"></script>
 </body></html>

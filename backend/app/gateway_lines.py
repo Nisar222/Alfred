@@ -241,6 +241,7 @@ def describe_lines(db: Session, tz_name: str = "Asia/Dubai", settings: Settings 
             "answered_today": completed, "failed_today": failed,
             "sim_status": sim_status, "sim_registration": line.sim_registration,
             "sim_signal": line.sim_signal, "sim_checked_at": _aware(line.sim_checked_at),
+            "sim_number": line.sim_number,
             "resting_until": resting.get(line.number) if line.enabled else None,
         })
     return described
@@ -283,6 +284,8 @@ def record_sim_check(db: Session, statuses: dict[int, SimStatus] | None, error: 
         # A port the gateway did not report is treated as not ready, never as registered.
         line.sim_registration = status.registration if status else "NOT_REPORTED"
         line.sim_signal = status.signal if status else None
+        # A moved or swapped SIM simply updates; an unreported port has no number.
+        line.sim_number = status.number if status else None
         line.sim_checked_at = now
 
 

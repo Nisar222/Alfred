@@ -22,6 +22,7 @@ class SimStatus:
     line: int
     registration: str
     signal: int | None
+    number: str | None = None
 
 
 class DinstarClient:
@@ -49,7 +50,7 @@ class DinstarClient:
         """Registration and signal for each line, in one request."""
         ports = ",".join(str(line - 1) for line in lines)
         try:
-            response = self.client.get("/api/get_port_info", params={"port": ports, "info_type": "reg,signal"})
+            response = self.client.get("/api/get_port_info", params={"port": ports, "info_type": "reg,signal,number"})
         except httpx.TimeoutException as exc:
             raise DinstarError("The gateway did not answer in time") from exc
         except httpx.HTTPError as exc:
@@ -74,7 +75,9 @@ class DinstarClient:
             if line not in lines:
                 continue
             signal = item.get("signal")
+            number = str(item.get("number") or "").strip()[:32] or None
             statuses[line] = SimStatus(
+                number=number,
                 line=line,
                 registration=str(item.get("reg") or "UNKNOWN").upper(),
                 signal=int(signal) if isinstance(signal, (int, float)) or str(signal).isdigit() else None,
