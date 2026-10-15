@@ -47,6 +47,7 @@ class GatewayLineOut(BaseModel):
     calls_today: int = 0; answered_today: int = 0; failed_today: int = 0
     sim_status: str = "off"; sim_registration: str | None = None
     sim_signal: int | None = None; sim_checked_at: datetime | None = None
+    sim_number: str | None = None
 
 
 class SimCheckOut(BaseModel):
@@ -238,6 +239,7 @@ class LiveCallOut(BaseModel):
     started_at: datetime | None
     elapsed_seconds: int = 0
     gateway_line: int | None = None
+    gateway_sim_number: str | None = None
 
 
 class CampaignLiveStatusOut(BaseModel):
@@ -274,7 +276,7 @@ class CallListItemOut(BaseModel):
     failure_reason: str | None = None; attempt_number: int = 1; scheduled_for: datetime | None = None
     started_at: datetime | None = None; completed_at: datetime | None = None
     recording_available: bool = False
-    gateway_line: int | None = None; gateway_prefix: str | None = None
+    gateway_line: int | None = None; gateway_prefix: str | None = None; gateway_sim_number: str | None = None
     model_config = {"from_attributes": True}
 
 

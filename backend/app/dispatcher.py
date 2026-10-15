@@ -193,6 +193,7 @@ def place_next_call(campaign_id: int, db: Session, settings: Settings | None = N
             raise DispatchError("All of this campaign's gateway lines are busy, resting, switched off, or have no ready SIM")
         call.gateway_line = line.number
         call.gateway_prefix = line.prefix
+        call.gateway_sim_number = line.sim_number
     destination = dial_destination(call.phone, line)
     call.status = CallStatus.in_progress
     call.started_at = datetime.now(timezone.utc)

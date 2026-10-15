@@ -28,3 +28,4 @@
 .line-chip{position:relative}.line-chip.sim-warn{border-style:dashed;border-color:#d9a493}.line-chip .sim-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;background:#c2410c}.line-chip.selected.sim-warn{border-style:dashed;border-color:#f3c3b8}
 .live-status-bar.is-error{background:linear-gradient(90deg,#8f2d1d,#a8402b)}
 .cooloff-pair input{max-width:110px}.cooloff-override{display:grid;gap:6px;font-weight:700;font-size:14px}.cooloff-override small{font-weight:500}.gateway-status.resting{background:#e9eef8;color:#2f4b80}
+.gateway-table{min-width:1150px}.gateway-row{grid-template-columns:80px 64px minmax(150px,1.3fr) 130px 120px 140px 60px 80px 60px 70px}.sim-number{font-family:ui-monospace,Menlo,monospace;font-size:13px;color:#15332f}.tapped-line{display:block;margin-top:4px;color:#0e5148;font-weight:700}

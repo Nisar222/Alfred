@@ -257,6 +257,9 @@ class GatewayLineApiTests(unittest.TestCase):
             get_settings.cache_clear()
             campaign_id = self.live_campaign(media_dir, [22, 23])
             self.enable_live_calling()
+            with self.session_factory() as db:
+                db.get(GatewayLine, 22).sim_number = "+46700000022"
+                db.commit()
             with patch("app.dispatcher.ThreeCXClient") as client_class:
                 client = MagicMock()
                 client.start_test_call.side_effect = [
@@ -274,6 +277,13 @@ class GatewayLineApiTests(unittest.TestCase):
         self.assertEqual(second.json()["gateway_line"], 23)
         log = self.client.get(f"/calls/{first.json()['id']}").json()
         self.assertEqual(log["gateway_line"], 22)
+        self.assertEqual(log["gateway_sim_number"], "+46700000022")
+        self.assertIsNone(second.json()["gateway_sim_number"])
+        # The call keeps the number it was dialled from even after the SIM in that slot changes.
+        with self.session_factory() as db:
+            db.get(GatewayLine, 22).sim_number = "+46700000099"
+            db.commit()
+        self.assertEqual(self.client.get(f"/calls/{first.json()['id']}").json()["gateway_sim_number"], "+46700000022")
 
     def test_all_lines_busy_keeps_the_call_queued_and_frees_the_slot(self):
         from app.config import get_settings
@@ -287,7 +297,8 @@ class GatewayLineApiTests(unittest.TestCase):
             self.enable_live_calling()
             with self.session_factory() as db:
                 db.add(Call(campaign_id=busy_id, phone="held", status=CallStatus.in_progress,
-                            gateway_line=5, gateway_prefix="8805", started_at=datetime.now(timezone.utc)))
+                            gateway_line=5, gateway_prefix="8805", gateway_sim_number="+46700000005",
+                            started_at=datetime.now(timezone.utc)))
                 db.commit()
                 busy, other = db.get(Campaign, busy_id), db.get(Campaign, other_id)
                 settings = get_settings()
@@ -304,6 +315,7 @@ class GatewayLineApiTests(unittest.TestCase):
         busy_status = next(item for item in status["active_campaigns"] if item["id"] == busy_id)
         self.assertEqual(busy_status["waiting_reason"], "Waiting for a free line")
         self.assertEqual(busy_status["live_calls"][0]["gateway_line"], 5)
+        self.assertEqual(busy_status["live_calls"][0]["gateway_sim_number"], "+46700000005")
         self.assertEqual(busy_status["gateway_lines"], [5])
 
     def test_live_status_reports_when_every_campaign_line_is_switched_off(self):

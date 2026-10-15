@@ -243,6 +243,8 @@ class Call(TimestampMixin, Base):
     # The gateway line and dial prefix this attempt actually used (None = standard route).
     gateway_line: Mapped[int | None] = mapped_column(Integer, index=True)
     gateway_prefix: Mapped[str | None] = mapped_column(String(8))
+    # The SIM number used for this attempt, frozen at dial time (survives later SIM swaps).
+    gateway_sim_number: Mapped[str | None] = mapped_column(String(32))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     configuration_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
@@ -315,6 +317,8 @@ class GatewayLine(TimestampMixin, Base):
     # Last SIM status read from the gateway API (REGISTER_OK = ready to dial).
     sim_registration: Mapped[str | None] = mapped_column(String(40))
     sim_signal: Mapped[int | None] = mapped_column(Integer)
+    # The SIM's own phone number as the gateway reports it (follows the SIM, not the slot).
+    sim_number: Mapped[str | None] = mapped_column(String(32))
     sim_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

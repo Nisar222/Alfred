@@ -58,9 +58,20 @@ class DinstarClientTests(unittest.TestCase):
         final = seen[-1]
         self.assertEqual(final.url.path, "/api/get_port_info")
         self.assertEqual(final.url.params["port"], ",".join(str(n) for n in range(32)))
-        self.assertEqual(final.url.params["info_type"], "reg,signal")
+        self.assertEqual(final.url.params["info_type"], "reg,signal,number")
         self.assertTrue(final.headers["authorization"].startswith("Digest "))
         self.assertNotIn(SECRET, final.headers["authorization"])
+
+    def test_reads_each_sims_phone_number_and_treats_blank_as_none(self):
+        info = [{"port": 0, "reg": "REGISTER_OK", "signal": 20, "number": " +46700000001 "},
+                {"port": 1, "reg": "NO_SIM", "signal": 0, "number": ""},
+                {"port": 2, "reg": "REGISTER_OK", "signal": 15}]
+        transport, _ = gateway(info)
+        with DinstarClient(CONFIGURED, transport=transport) as client:
+            statuses = client.sim_statuses()
+        self.assertEqual(statuses[1].number, "+46700000001")
+        self.assertIsNone(statuses[2].number)
+        self.assertIsNone(statuses[3].number)
 
     def test_errors_are_readable_and_never_include_the_password(self):
         cases = [
@@ -149,6 +160,23 @@ class SimGatingTests(unittest.TestCase):
         self.assertEqual(sim_gate(self.db, CONFIGURED), "ok")
         self.assertEqual(allocate_line(self.db, self.campaign, CONFIGURED).number, 1)
 
+    def test_sim_numbers_are_stored_follow_moved_sims_and_survive_a_failed_check(self):
+        numbered = lambda mapping: [{"port": n - 1, "reg": "REGISTER_OK", "signal": 18, "number": mapping.get(n, "")} for n in range(1, 33)]
+        self.check(numbered({1: "+46700000001", 2: "+46700000002"}))
+        rows = {row["number"]: row for row in describe_lines(self.db, "UTC", CONFIGURED)}
+        self.assertEqual((rows[1]["sim_number"], rows[2]["sim_number"], rows[3]["sim_number"]),
+                         ("+46700000001", "+46700000002", None))
+        # The SIM from slot 1 moved to slot 3, and slot 1 is now empty: updates silently.
+        self.check(numbered({2: "+46700000002", 3: "+46700000001"}))
+        self.assertEqual(self.db.get(GatewayLine, 1).sim_number, None)
+        self.assertEqual(self.db.get(GatewayLine, 3).sim_number, "+46700000001")
+        # A port missing from the reply has no number; a failed check keeps the last-known ones.
+        self.check([item for item in numbered({2: "+46700000002"}) if item["port"] != 1])
+        self.assertIsNone(self.db.get(GatewayLine, 2).sim_number)
+        self.check(numbered({2: "+46700000002"}))
+        self.check(status=503)
+        self.assertEqual(self.db.get(GatewayLine, 2).sim_number, "+46700000002")
+
     def test_switched_off_line_with_ready_sim_is_still_not_used(self):
         self.check(all_ports())
         self.db.get(GatewayLine, 1).enabled = False
@@ -231,6 +259,7 @@ class SimStatusApiTests(unittest.TestCase):
         self.assertEqual((lines[1]["sim_status"], lines[1]["sim_registration"], lines[1]["sim_signal"]),
                          ("not_ready", "UNREGISTER", 0))
         self.assertEqual((lines[2]["sim_status"], lines[2]["sim_signal"]), ("ready", 18))
+        self.assertIn("sim_number", lines[2])
 
     def test_starting_a_gateway_campaign_checks_sims_once_and_standard_route_does_not(self):
         calls = []

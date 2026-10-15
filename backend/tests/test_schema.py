@@ -63,6 +63,16 @@ class SchemaTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "alembic" / "versions" / "c8e2a5f19b37_add_line_cooloff.py").read_text()
         self.assertIn('down_revision = "b7c41e9d2a60"', source)
 
+    def test_sim_number_schema_and_migration(self):
+        from pathlib import Path
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        inspector = inspect(engine)
+        self.assertIn("sim_number", {c["name"] for c in inspector.get_columns("gateway_lines")})
+        self.assertIn("gateway_sim_number", {c["name"] for c in inspector.get_columns("calls")})
+        source = (Path(__file__).resolve().parents[1] / "alembic" / "versions" / "d4f7b2c81e95_add_sim_numbers.py").read_text()
+        self.assertIn('down_revision = "c8e2a5f19b37"', source)
+
     def test_callout_exposes_dtmf_events_history(self):
         call = SimpleNamespace(
             id=1, campaign_id=1, phone="+15551234567", prospect_name=None,

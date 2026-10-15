@@ -93,6 +93,7 @@ def live_campaign_status(db: Session) -> dict:
                     "started_at": call.started_at,
                     "elapsed_seconds": elapsed,
                     "gateway_line": call.gateway_line,
+                    "gateway_sim_number": call.gateway_sim_number,
                 }
             )
 
